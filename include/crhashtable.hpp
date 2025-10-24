@@ -320,15 +320,14 @@ protected:
 	inline slot_iterator find_index(size_t hash, uint32_t elementIndex) const noexcept
 	{
 		slot_iterator pos = modulus(hash);
-		const slot_type dfh_inc = dfh_increment();
-		meta_t curr{dfh_inc + probe_hash(hash), elementIndex};
 		const auto* bucket = &const_at(pos);
-
-		while (bucket->dfh_hash != curr.dfh_hash || bucket->nth != curr.nth) {
+		// The element must be at bucket or some slot after this.
+		// A empty-slot cannot exist before the element's slot.
+		while (bucket->nth != elementIndex) {
+			assert(bucket->dfh_hash);
 			this->next_bucket(pos, bucket);
-			assert(!dfh_at_max(curr.dfh_hash));
-			curr.dfh_hash += dfh_inc;
 		}
+		assert(bucket->dfh_hash);
 		return pos;
 	}
 
@@ -340,14 +339,13 @@ protected:
 		const slot_type dfh_dec = dfh_increment();
 		auto* bucket = &at(itr);
 		auto* prev = bucket;
-		while (true) {
-			prev = bucket;
-			this->next_bucket(itr, bucket);
-			if (dfh(bucket->dfh_hash) <= 1) {
-				break;
-			}
+		this->next_bucket(itr, bucket);
+
+		while (bucket->dfh_hash >= dfh_dec * 2) {
 			prev->dfh_hash = bucket->dfh_hash - dfh_dec;
 			prev->nth = bucket->nth;
+			prev = bucket;
+			this->next_bucket(itr, bucket);
 		}
 		*prev = {0, 0};
 	}
@@ -358,7 +356,7 @@ protected:
 
 	/// transform const KValue& to const key_t&
 	template<typename KValue>
-	static auto to_key(const KValue& value) -> auto
+	static constexpr auto to_key(const KValue& value) -> auto
 	{
 		if constexpr (std::is_same_v<KValue, value_t>) {
 			constexpr keyof_t conv;
@@ -462,7 +460,7 @@ protected:
 		const slot_type dfh_inc = dfh_increment();
 		slot_type dist = dfh_inc + probe_hash(hash);
 		slot_iterator pos = modulus(hash);
-		const auto* bucket = &at(pos);
+		const auto* bucket = &const_at(pos);
 
 		for (;;) {
 			if (bucket->dfh_hash == dist) {
