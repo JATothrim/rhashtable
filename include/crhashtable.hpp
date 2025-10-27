@@ -195,7 +195,9 @@ protected:
 
 	inline slot_type probe_hash(size_t hash_value) const noexcept
 	{
-		return (hash_value >> m_dfh_shift) & (dfh_increment() - 1);
+		// Take SLOT_BITS - INITIAL_DFH_BITS num low bits
+		// and integer scale down to probe hash range.
+		return (hash_value & 0xFFFFFFFul) * (dfh_increment() - 1) / 0xFFFFFFFul;
 	}
 
 	inline size_t mcapacity() const noexcept
@@ -270,14 +272,24 @@ protected:
 		std::fill_n(m_metatable.get(), mcapacity(), meta_t{0,0});
 	}
 
-	inline void grow_dfh_bits() noexcept
+	inline slot_type grow_dfh_bits(slot_type dfh_hash) noexcept
 	{
-		/// Metadata is shifted right to discard a low probe hash bit.
+		const uint64_t curr_mask = dfh_increment() - 1u;
+		const uint64_t next_mask = curr_mask >> 1;
+
 		for (auto* bucket = &at(0); bucket != &at(mcapacity()); ++bucket) {
-			bucket->dfh_hash >>= 1;
+			if (bucket->dfh_hash) {
+				// integer scale down the probe hashes and right shift the DFH.
+				const auto phash = uint64_t(bucket->dfh_hash & curr_mask) * next_mask / curr_mask;
+				const auto pdfh = bucket->dfh_hash & (~curr_mask);
+				bucket->dfh_hash = (pdfh >> 1) + phash;
+			}
 		}
+
 		++m_dfh_shift;
 		assert(m_dfh_shift < SLOT_BITS);
+
+		return ((dfh_hash & (~curr_mask)) >> 1) + (uint64_t(dfh_hash & curr_mask) * next_mask / curr_mask);
 	}
 
 	inline slot_iterator insert_index(size_t hash, index_type elementIndex) noexcept
@@ -306,8 +318,7 @@ protected:
 				break;
 			} else if (dfh_at_max(curr.dfh_hash)) {
 				// ran out of DFH bits.
-				curr.dfh_hash >>= 1;
-				grow_dfh_bits();
+				curr.dfh_hash = grow_dfh_bits(curr.dfh_hash);
 				dfh_inc = dfh_increment();
 			}
 			curr.dfh_hash += dfh_inc;
