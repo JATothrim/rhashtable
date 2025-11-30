@@ -18,13 +18,13 @@
 #include <utility>
 #include <vector>
 #include <cmath>
+
 /**
  * Hashtable by JATothrim.
  *
  * - Uses robin-hood hashing.
  * - Contiguous element data. (see caveat)
  * - 64-bit metadata per element.
- * - Does probe hash bit stealing. "ultra dense"
  *
  * 64-bit hash function is required. Non-avalanching or lower than 64 bits can severely disable performance.
  *
@@ -41,18 +41,9 @@
  *
  * The begin() and end() return a value_iterator that provides fast random-access iteration over all
  * elements. A value_iterator can be converted back into a local_iterator. This however requires finding
- * the metadata slot of the pointed-to element. This conversion is still more efficient than defererencing
- * the value_iterator and using find().
+ * the metadata slot of the pointed-to element. Such a conversion is still more efficient than
+ * defererencing the value_iterator and using find().
  *
- * Probe hash bit stealing: INSERT() dynamically balances the count of probe hash bits and DFH bits. More
- * distance-from-home (DFH) bits can be gained in exchange of stealing bits from the probe hashes. The
- * metadata table can thus tolerate extreme collision chain lengths before a rehash is forced. The table
- * therefore uses maximum possible number of bits for the probe hashes, and minimum required number of DFH
- * bits to reduce key comparisons made when probing.
- *
- * The one-way grow_dfh_bits() is much faster than doing full rehash in the event DFH bits are exhausted.
- * However, the non-const probe hash bit-width comes at a slight cost compared to having fixed-sized probe
- * hash field.
  *
  */
 
@@ -134,12 +125,12 @@ public:
 
 private:
 	static constexpr float MAX_LOAD_FACTOR = 0.8f;
-	static constexpr slot_type INITIAL_DFH_BITS = 4;
 	static constexpr slot_type SLOT_BITS = 8 * sizeof(slot_type);
 	// 2^shift capacity.
 	uint32_t m_shift = 0;
 	// Count of DFH bits.
-	uint32_t m_dfh_shift = 0;
+	// In this version jh::HashtableAlgorithms<> m_dfh_shift is a constant.
+	static constexpr uint32_t m_dfh_shift = SLOT_BITS / 2;
 	// Max count of elements before an rehash takes place.
 	size_t m_max_fill = 0;
 
@@ -175,29 +166,28 @@ protected:
 
 	// Distance-from-home
 	// Zero is reserved for empty slot so 1 is at home slot.
-	inline slot_type dfh(slot_type x) const noexcept
+	static constexpr slot_type dfh(slot_type x) noexcept
 	{
 		return x >> (SLOT_BITS - m_dfh_shift);
 	}
 
 	// The DFH bits are arranged such that less-than comparison of the whole slot_type
 	// value works regardless of what the probe hash bits are.
-	inline slot_type dfh_increment() const noexcept
+	static constexpr slot_type dfh_increment() noexcept
 	{
 		return slot_type(1) << (SLOT_BITS - m_dfh_shift);
 	}
 
 	// Can dfh_hash be incremented by dfh_increment()?
-	inline bool dfh_at_max(slot_type dfh_hash) const noexcept
+	static constexpr bool dfh_at_max(slot_type dfh_hash) noexcept
 	{
 		return dfh_hash > (~dfh_increment());
 	}
 
-	inline slot_type probe_hash(size_t hash_value) const noexcept
+	static constexpr slot_type probe_hash(size_t hash_value) noexcept
 	{
-		// Take SLOT_BITS - INITIAL_DFH_BITS num low bits
-		// and integer scale down to probe hash range.
-		return (hash_value & 0xFFFFFFFul) * (dfh_increment() - 1) / 0xFFFFFFFul;
+		// Grab the low m_dfh_shift bits.
+		return hash_value & ((slot_type(1) << m_dfh_shift) - 1);
 	}
 
 	inline size_t mcapacity() const noexcept
@@ -241,8 +231,6 @@ protected:
 		++m_shift;
 		m_max_fill = mcapacity() * MAX_LOAD_FACTOR;
 
-		m_dfh_shift = std::max(m_dfh_shift - 1, INITIAL_DFH_BITS);
-
 		// Delete first and then allocate to minimize peak memory usage.
 		m_metatable.reset();
 		m_metatable = std::make_unique<meta_t[]>(mcapacity());
@@ -265,31 +253,9 @@ protected:
 		m_shift = calculate_shift_for(max_elements);
 		m_max_fill = mcapacity() * MAX_LOAD_FACTOR;
 
-		m_dfh_shift = INITIAL_DFH_BITS;
-
 		m_metatable.reset();
 		m_metatable = std::make_unique<meta_t[]>(mcapacity());
 		std::fill_n(m_metatable.get(), mcapacity(), meta_t{0,0});
-	}
-
-	inline slot_type grow_dfh_bits(slot_type dfh_hash) noexcept
-	{
-		const uint64_t curr_mask = dfh_increment() - 1u;
-		const uint64_t next_mask = curr_mask >> 1;
-
-		for (auto* bucket = &at(0); bucket != &at(mcapacity()); ++bucket) {
-			if (bucket->dfh_hash) {
-				// integer scale down the probe hashes and right shift the DFH.
-				const auto phash = uint64_t(bucket->dfh_hash & curr_mask) * next_mask / curr_mask;
-				const auto pdfh = bucket->dfh_hash & (~curr_mask);
-				bucket->dfh_hash = (pdfh >> 1) + phash;
-			}
-		}
-
-		++m_dfh_shift;
-		assert(m_dfh_shift < SLOT_BITS);
-
-		return ((dfh_hash & (~curr_mask)) >> 1) + (uint64_t(dfh_hash & curr_mask) * next_mask / curr_mask);
 	}
 
 	inline slot_iterator insert_index(size_t hash, index_type elementIndex) noexcept
@@ -298,14 +264,13 @@ protected:
 
 		// Metadata entry to be inserted:
 		// DFH == 1 => element is at it's home index
-		slot_type dfh_inc = dfh_increment();
-		meta_t curr = {dfh_inc + probe_hash(hash), elementIndex};
+		meta_t curr = {dfh_increment() + probe_hash(hash), elementIndex};
 
 		// Find insertion point.
 		auto* bucket = &at(hindex);
 		while (curr.dfh_hash <= bucket->dfh_hash) {
 			assert(!dfh_at_max(curr.dfh_hash));
-			curr.dfh_hash += dfh_inc;
+			curr.dfh_hash += dfh_increment();
 			this->next_bucket(hindex, bucket);
 		}
 
@@ -317,11 +282,10 @@ protected:
 			if (!curr.dfh_hash) {
 				break;
 			} else if (dfh_at_max(curr.dfh_hash)) {
-				// ran out of DFH bits.
-				curr.dfh_hash = grow_dfh_bits(curr.dfh_hash);
-				dfh_inc = dfh_increment();
+				// ran out of DFH bits, the metadata now trash.
+				return mcapacity();
 			}
-			curr.dfh_hash += dfh_inc;
+			curr.dfh_hash += dfh_increment();
 			this->next_bucket(hindex, bucket);
 		}
 
@@ -347,13 +311,12 @@ protected:
 		// Maintain the robin-hood hashing invariant:
 		// Shift backwards from bucket+1 until empty slot or home index is found.
 		// The DFH is consequently decremented by one.
-		const slot_type dfh_dec = dfh_increment();
 		auto* bucket = &at(itr);
 		auto* prev = bucket;
 		this->next_bucket(itr, bucket);
 
-		while (bucket->dfh_hash >= dfh_dec * 2) {
-			prev->dfh_hash = bucket->dfh_hash - dfh_dec;
+		while (bucket->dfh_hash >= dfh_increment() * 2) {
+			prev->dfh_hash = bucket->dfh_hash - dfh_increment();
 			prev->nth = bucket->nth;
 			prev = bucket;
 			this->next_bucket(itr, bucket);
@@ -437,6 +400,11 @@ protected:
 		// Re-build metadata.
 		for (size_t i = 0; i < m_elements.size(); ++i) {
 			last = insert_index(m_hasher(to_key(m_elements[i])), i);
+			if (last == mcapacity()) {
+				// Oops, too many collisions.
+				grow_and_clear();
+				i = 0;
+			}
 		}
 		return last;
 	}
@@ -458,7 +426,12 @@ protected:
 			return do_rehash();
 		}
 
-		return insert_index(m_hasher(to_key(kv)), m_elements.size() - 1);
+		auto itr = insert_index(m_hasher(to_key(kv)), m_elements.size() - 1);
+		if (itr == mcapacity()) {
+			grow_and_clear();
+			return do_rehash();
+		}
+		return itr;
 	}
 
 	/**
@@ -468,8 +441,7 @@ protected:
 	slot_iterator do_find(const Key& kval) const
 	{
 		const size_t hash = m_hasher(to_key(kval));
-		const slot_type dfh_inc = dfh_increment();
-		slot_type dist = dfh_inc + probe_hash(hash);
+		slot_type dist = dfh_increment() + probe_hash(hash);
 		slot_iterator pos = modulus(hash);
 		const auto* bucket = &const_at(pos);
 
@@ -487,7 +459,7 @@ protected:
 				break;
 			}
 			this->next_bucket(pos, bucket);
-			dist += dfh_inc;
+			dist += dfh_increment();
 		}
 		return mcapacity();
 	}
@@ -527,7 +499,6 @@ protected:
 	void swap(HashtableAlgorithms & cont) noexcept {
 		using std::swap;
 		std::swap(m_shift, cont.m_shift);
-		std::swap(m_dfh_shift, cont.m_dfh_shift);
 		std::swap(m_max_fill, cont.m_max_fill);
 		std::swap(m_metatable, cont.m_metatable);
 		std::swap(m_elements, cont.m_elements);
@@ -548,7 +519,6 @@ public:
 
 	HashtableAlgorithms(HashtableAlgorithms && cont) noexcept
 		: m_shift(std::exchange(cont.m_shift, 0))
-		, m_dfh_shift(std::exchange(cont.m_dfh_shift, 0))
 		, m_max_fill(std::exchange(cont.m_max_fill, 0))
 		, m_metatable(std::move(cont.m_metatable))
 		, m_elements(std::move(cont.m_elements))
@@ -558,7 +528,6 @@ public:
 
 	HashtableAlgorithms(const HashtableAlgorithms & cont)
 		: m_shift(cont.m_shift)
-		, m_dfh_shift(cont.m_dfh_shift)
 		, m_max_fill(cont.m_max_fill)
 		, m_metatable(new meta_t[cont.mcapacity()])
 		, m_elements(cont.m_elements)
