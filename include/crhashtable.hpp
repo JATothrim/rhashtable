@@ -126,11 +126,11 @@ public:
 private:
 	static constexpr float MAX_LOAD_FACTOR = 0.8f;
 	static constexpr slot_type SLOT_BITS = 8 * sizeof(slot_type);
-	// 2^shift capacity.
-	uint32_t m_shift = 0;
 	// Count of DFH bits.
 	// In this version jh::HashtableAlgorithms<> m_dfh_shift is a constant.
-	static constexpr uint32_t m_dfh_shift = SLOT_BITS / 2;
+	static constexpr uint32_t DFH_SHIFT = SLOT_BITS / 2;
+	// 2^shift capacity.
+	uint32_t m_shift = 0;
 	// Max count of elements before an rehash takes place.
 	size_t m_max_fill = 0;
 
@@ -168,14 +168,14 @@ protected:
 	// Zero is reserved for empty slot so 1 is at home slot.
 	static constexpr slot_type dfh(slot_type x) noexcept
 	{
-		return x >> (SLOT_BITS - m_dfh_shift);
+		return x >> (SLOT_BITS - DFH_SHIFT);
 	}
 
 	// The DFH bits are arranged such that less-than comparison of the whole slot_type
 	// value works regardless of what the probe hash bits are.
 	static constexpr slot_type dfh_increment() noexcept
 	{
-		return slot_type(1) << (SLOT_BITS - m_dfh_shift);
+		return slot_type(1) << (SLOT_BITS - DFH_SHIFT);
 	}
 
 	// Can dfh_hash be incremented by dfh_increment()?
@@ -187,7 +187,7 @@ protected:
 	static constexpr slot_type probe_hash(size_t hash_value) noexcept
 	{
 		// Grab the low m_dfh_shift bits.
-		return hash_value & ((slot_type(1) << m_dfh_shift) - 1);
+		return hash_value & ((slot_type(1) << DFH_SHIFT) - 1);
 	}
 
 	inline size_t mcapacity() const noexcept
@@ -213,6 +213,17 @@ protected:
 			++index;
 		}
 		ptr = &m_metatable[index];
+	}
+
+	template<typename Meta>
+	inline void next_bucket(Meta*& ptr) const noexcept
+	{
+		// Index-less.
+		if (ptr + 1 == m_metatable.get() + mcapacity()) [[unlikely]] {
+			ptr = m_metatable.get();
+		} else {
+			++ptr;
+		}
 	}
 
 	inline size_t size_limit() const noexcept
@@ -260,21 +271,19 @@ protected:
 
 	inline slot_iterator insert_index(size_t hash, index_type elementIndex) noexcept
 	{
-		slot_iterator hindex = modulus(hash);
-
 		// Metadata entry to be inserted:
 		// DFH == 1 => element is at it's home index
 		meta_t curr = {dfh_increment() + probe_hash(hash), elementIndex};
 
-		// Find insertion point.
-		auto* bucket = &at(hindex);
+		// Find insertion point, i.e. skip over too poor slots.
+		auto* bucket = &at(modulus(hash));
 		while (curr.dfh_hash <= bucket->dfh_hash) {
 			assert(!dfh_at_max(curr.dfh_hash));
 			curr.dfh_hash += dfh_increment();
-			this->next_bucket(hindex, bucket);
+			this->next_bucket(bucket);
 		}
 
-		const slot_iterator pos = hindex;
+		const slot_iterator slot = std::distance(&at(0), bucket);
 
 		// Rich slots are shifted forwards to make space for the poor.
 		for(;;) {
@@ -286,10 +295,10 @@ protected:
 				return mcapacity();
 			}
 			curr.dfh_hash += dfh_increment();
-			this->next_bucket(hindex, bucket);
+			this->next_bucket(bucket);
 		}
 
-		return pos;
+		return slot;
 	}
 
 	inline slot_iterator find_index(size_t hash, uint32_t elementIndex) const noexcept
@@ -441,24 +450,24 @@ protected:
 	slot_iterator do_find(const Key& kval) const
 	{
 		const size_t hash = m_hasher(to_key(kval));
+		const auto* bucket = &const_at(modulus(hash));
 		slot_type dist = dfh_increment() + probe_hash(hash);
-		slot_iterator pos = modulus(hash);
-		const auto* bucket = &const_at(pos);
 
 		for (;;) {
-			if (bucket->dfh_hash == dist) {
+			if (bucket->dfh_hash < dist) {
+				// DFH is greater than inserted key can have => key not found.
+				// This branch is before the below branch, to early return on empty home slots.
+				break;
+			} else if (bucket->dfh_hash == dist) {
 				if (m_equal(to_key(m_elements[bucket->nth]), to_key(kval))) {
 					// Found!
-					return pos;
+					return std::distance(&const_at(0), bucket);
 				}
-			} else if (bucket->dfh_hash < dist) {
-				// DFH is greater than inserted key can have => key not found.
-				break;
 			} else if (dfh_at_max(dist)) {
-				// reached max DFH.
+				// reached max DFH, the worst case of 2^16-2 probes.
 				break;
 			}
-			this->next_bucket(pos, bucket);
+			this->next_bucket(bucket);
 			dist += dfh_increment();
 		}
 		return mcapacity();
