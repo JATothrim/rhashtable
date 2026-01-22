@@ -24,7 +24,8 @@
  *
  * - Uses robin-hood hashing.
  * - Contiguous element data. (see caveat)
- * - 64-bit metadata per element.
+ * - 64-bit metadata per element: 16-bit distance-from-home, 16-bit has fingerprint and 32-bit index.
+ * - Elements can be iterated in insertion order if ERASE() is never performed.
  *
  * 64-bit hash function is required. Non-avalanching or lower than 64 bits can severely disable performance.
  *
@@ -34,16 +35,19 @@
  * element is moved into the erased element, and the metadata is updated. ERASE() operation therefore
  * invalidates all references and iterators to elements.
  *
- * The container uses an local_iterator type for emplace(), find() and erase(). The local_iterator is not
- * optimal for iterating through the container since it iterates over metadata slots. The local_iterator is
- * however efficiently convertible to a value_iterator that provides iteration over the container's element
- * array. The past-end local_iterator and value_iterator compare equal.
+ * The container uses an local_iterator type for emplace(), find(), erase() and end(). The local_iterator
+ * is not optimal for iterating through the container, or repeated access, since it iterates over metadata
+ * slots. The local_iterator is however efficiently convertible to a value_iterator that provides iteration
+ * over the container's element array. The past-end local_iterator and value_iterator compare equal.
  *
- * The begin() and end() return a value_iterator that provides fast random-access iteration over all
- * elements. A value_iterator can be converted back into a local_iterator. This however requires finding
- * the metadata slot of the pointed-to element. Such a conversion is still more efficient than
- * defererencing the value_iterator and using find().
+ * The begin() returns a value_iterator that provides fast iteration over all elements. A value_iterator
+ * can be converted back into a local_iterator. This however requires finding the metadata slot of the
+ * pointed-to element. Such a conversion is still more efficient than defererencing the value_iterator and
+ * using find().
  *
+ * RHashMap< Key, Mapped> and RHashSet< Key> variants of the container are provided. The key_type cannot be
+ * mutated once inserted: The map variant value_type is std::pair< const Key, Mapped>. The set variant
+ * key_type and value_type are const Key.
  *
  */
 
@@ -56,59 +60,84 @@ template <typename, typename, typename, typename>
 class HashTableAlgorithms;
 
 /**
- * Key of value.
- * Element's key is accessed via KeyOf()(value)
- * The functor must yield a type that is accepted by both
- * the equal comparison and the hash functor.
- * @note The container's user must guarantee the key value is not changed
- *       while it is inserted.
- */
-template <typename Key>
-class IdentityKey {
-public:
-	using type = Key;
-	const type& operator()(const Key& key) const {
-		return key;
-	}
-};
-
-template<typename Key, typename Mapped>
-struct KeyOfPair {
-	using type = Key;
-	const type& operator()(const std::pair<Key,Mapped>& v) const {
-		return v.first;
-	}
-};
-
-
-/**
  * Bucket iterator template.
  */
-template<typename>
+template<typename, bool = false>
 class BucketIterator;
 
 /**
  * Value iterator template.
  */
-template<typename>
+template<typename, bool = false>
 class ValueIterator;
+
+/**
+ * Map vs. set container API
+ */
+template<typename Key, typename Mapped>
+class Config {
+protected:
+	using element_type = std::pair<const Key, Mapped>;
+	using store_type = element_type;
+
+	static constexpr const Key& to_key(const element_type& value)
+	{
+		return const_cast<const Key&>(value.first);
+	}
+
+	static constexpr const Key& to_key(const Key& value)
+	{
+		return value;
+	}
+
+	static constexpr void move_assign(element_type& dst, element_type& src)
+	{
+		const_cast<Key&>(dst.first) = std::move(const_cast<Key&>(src.first));
+		dst.second = std::move(src.second);
+	}
+public:
+	// Public API typedefs.
+	using key_type = const Key;
+	using mapped_type = Mapped;
+	using value_type = element_type;
+};
+
+template<typename Key>
+class Config<Key, void> {
+protected:
+	using element_type = const Key;
+	using store_type = Key;
+
+	static constexpr const Key& to_key(const Key& value)
+	{
+		return value;
+	}
+
+	static constexpr void move_assign(element_type& dst, element_type& src)
+	{
+		const_cast<Key&>(dst) = std::move(const_cast<Key&>(src));
+	}
+public:
+	// Public API typedefs.
+	using key_type = element_type;
+	using value_type = element_type;
+};
 
 /**
  * Hashtable algorithms.
  * @brief the implementation of RHash[Set,Map]
  */
-template <typename Value, typename Hasher, typename Equal, typename KeyOf>
-class HashtableAlgorithms {
+template <typename Key, typename Value, typename Hasher, typename Equal>
+class HashtableAlgorithms : public Config<Key, Value> {
 protected:
 
-	using value_t = Value;
-	using keyof_t = KeyOf;
-	using key_t = typename keyof_t::type;
 	using hasher_t = Hasher;
 	using equal_t = Equal;
 
 	friend class BucketIterator<HashtableAlgorithms>;
+	friend class BucketIterator<HashtableAlgorithms, true>;
 	friend class ValueIterator<HashtableAlgorithms>;
+	friend class ValueIterator<HashtableAlgorithms, true>;
 
 	using slot_iterator = size_t;
 
@@ -122,6 +151,8 @@ protected:
 public:
 	using local_iterator = BucketIterator<HashtableAlgorithms>;
 	using value_iterator = ValueIterator<HashtableAlgorithms>;
+	using const_local_iterator = BucketIterator<HashtableAlgorithms, true>;
+	using const_value_iterator = ValueIterator<HashtableAlgorithms, true>;
 
 private:
 	static constexpr float MAX_LOAD_FACTOR = 0.8f;
@@ -138,7 +169,8 @@ private:
 	std::unique_ptr<meta_t[]> m_metatable;
 
 	// Actual element data.
-	using elements_t = std::vector<value_t>;
+	using value_t = typename Config<Key, Value>::element_type;
+	using elements_t = std::vector<typename Config<Key, Value>::store_type>;
 	elements_t m_elements;
 	hasher_t m_hasher;
 	equal_t m_equal;
@@ -328,7 +360,7 @@ protected:
 			prev->dfh_hash = bucket->dfh_hash - dfh_increment();
 			prev->nth = bucket->nth;
 			prev = bucket;
-			this->next_bucket(itr, bucket);
+			this->next_bucket(bucket);
 		}
 		*prev = {0, 0};
 	}
@@ -336,60 +368,48 @@ protected:
 	/**
 	 * Element access.
 	 */
-
-	/// transform const KValue& to const key_t&
-	template<typename KValue>
-	static constexpr auto to_key(const KValue& value) -> auto
-	{
-		if constexpr (std::is_same_v<KValue, value_t>) {
-			constexpr keyof_t conv;
-			return conv(value);
-		} else if constexpr (std::is_same_v<KValue, key_t>) {
-			return value;
-		} else if constexpr (std::is_convertible_v<KValue, key_t>) {
-			return value;
-		} else {
-			static_assert(false, "Your key type is wrong!");
-		}
-	}
+	using Config<Key, Value>::to_key;
 
 	value_t* element(slot_iterator pos)
 	{
 		if (pos == mcapacity()) {
-			return &*m_elements.end();
+			return m_elements.data() + m_elements.size();
+		}
+		// For set like containers non-const return type is impossible.
+		return &m_elements[at(pos).nth];
+	}
+
+	const value_t* element(slot_iterator pos) const
+	{
+		if (pos == mcapacity()) {
+			return m_elements.data() + m_elements.size();
 		}
 		return &m_elements[at(pos).nth];
 	}
 
-	value_t* element(slot_iterator pos) const
+	slot_iterator convert_iterator(value_t* itr)
 	{
-		if (pos == mcapacity()) {
-			return const_cast<value_t*>(&*m_elements.end());
-		}
-		return const_cast<value_t*>(&m_elements[at(pos).nth]);
-	}
-
-	elements_t::iterator convert_iterator(slot_iterator itr) const
-	{
-		if (itr == mcapacity()) {
-			return const_cast<elements_t&>(m_elements).end();
-		}
-		return const_cast<elements_t&>(m_elements).begin() + at(itr).nth;
-	}
-
-	slot_iterator convert_iterator(elements_t::iterator itr) const
-	{
-		if (itr == m_elements.end()) {
+		if (itr == m_elements.data() + m_elements.size()) {
 			return mcapacity();
 		}
 		auto hash = m_hasher(to_key(*itr));
-		index_type pos = std::distance(m_elements.data(), const_cast<const value_t*>(&*itr));
+		index_type pos = std::distance(m_elements.data(), itr);
+		return find_index(hash, pos);
+	}
+
+	slot_iterator convert_iterator(const value_t* itr) const
+	{
+		if (itr == m_elements.data() + m_elements.size()) {
+			return mcapacity();
+		}
+		auto hash = m_hasher(to_key(*itr));
+		index_type pos = std::distance(m_elements.data(), itr);
 		return find_index(hash, pos);
 	}
 
 	slot_iterator advance(slot_iterator itr, ptrdiff_t n) const
 	{
-		// Advance up to end_bucket(), skipping empty buckets.
+		// Advance up to end(), skipping empty buckets.
 		while (n && itr != mcapacity()) {
 			n -= at(itr).dfh_hash != slot_type(0);
 			++itr;
@@ -422,10 +442,10 @@ protected:
 	 * INSERT() a value, rehash if necessary.
 	 * @return slot_iterator of the inserted m_elements.back()
 	 */
-	template <typename Key, typename... Args>
-	slot_iterator do_emplace(Key&& item, Args&&... args)
+	template <typename Item, typename... Args>
+	slot_iterator do_emplace(Item&& item, Args&&... args)
 	{
-		auto& kv = m_elements.emplace_back(std::forward<Key>(item), std::forward<Args>(args)...);
+		auto& kv = m_elements.emplace_back(std::forward<Item>(item), std::forward<Args>(args)...);
 
 		if (!m_metatable) [[unlikely]] {
 			resize_and_clear(8);
@@ -446,8 +466,8 @@ protected:
 	/**
 	 * FIND()
 	 */
-	template <typename Key>
-	slot_iterator do_find(const Key& kval) const
+	template <typename Item>
+	slot_iterator do_find(const Item& kval) const
 	{
 		const size_t hash = m_hasher(to_key(kval));
 		const auto* bucket = &const_at(modulus(hash));
@@ -488,7 +508,7 @@ protected:
 			const auto rm = find_index(end_hash, at_end);
 			at(rm).nth = index;
 			// Move the element.
-			m_elements[index] = std::move(m_elements.back());
+			this->move_assign(m_elements[index], m_elements.back());
 		}
 
 		// Pop-back.
@@ -517,12 +537,9 @@ protected:
 
 public:
 
-	using key_type = const key_t;
-    using value_type = value_t;
-    // todo using mapped_type = value_t::second_type if instantiated HashMap.
     using hasher = hasher_t;
     using key_equal = equal_t;
-    // todo using allocator_type = ;
+    // todo: using allocator_type = ;
 
 	HashtableAlgorithms() =default;
 
@@ -588,7 +605,7 @@ public:
 		if (empty()) {
 			return {local_iterator(this, this->do_emplace(std::forward<F>(key), std::forward<Args>(args)...)), true};
 		}
-		// todo: need do_find_or_emplace()
+		// todo: need do_find_or_emplace() this calculates the hash *twice*
 		auto pos = this->do_find(key);
 		if (pos != mcapacity()) {
 			return {local_iterator(this, pos), false};
@@ -618,7 +635,7 @@ public:
 		do_erase(rm.slot());
 
 		if (dist < m_elements.size()) {
-			return value_iterator(this, m_elements.begin() + dist);
+			return value_iterator(this, m_elements.data() + dist);
 		} else {
 			return end();
 		}
@@ -643,18 +660,41 @@ public:
 	/**
 	 * Iterator to elements.
 	 */
-	value_iterator begin() const
+
+	value_iterator begin()
 	{
-		return value_iterator(this, const_cast<elements_t&>(m_elements).begin());
+		return value_iterator(this, m_elements.data());
+	}
+
+	const_value_iterator begin() const
+	{
+		return const_value_iterator(this, m_elements.data());
+	}
+
+	const_value_iterator cbegin() const
+	{
+		return const_value_iterator(this, m_elements.data());
 	}
 
 	/**
 	 * Past-end iterator.
-	 * @note past-end local_iterator and value_iterator compare equal.
+	 * @note A past-end local_iterator and value_iterator compare equal.
+	 *       A local_iterator can implicitly converted into a value_iterator.
 	 */
-	local_iterator end() const
+
+	local_iterator end()
 	{
 		return local_iterator(this, mcapacity());
+	}
+
+	const_local_iterator end() const
+	{
+		return const_local_iterator(this, mcapacity());
+	}
+
+	const_local_iterator cend() const
+	{
+		return const_local_iterator(this, mcapacity());
 	}
 
 	void clear()
@@ -693,26 +733,40 @@ public:
 	}
 
 	// TODO: implement more of STL unordered_map API.
+
+	// TODO: cache_order() and find_cached():
+	//       sort elements such that find_cached() can assume
+	//       the elements appear in the same order as in the metatable.
+	//       This would enable better lookup performance, since the element
+	//       indirection only needs to happen once per lookup.
+	//       If lots of erasures had happened, cache_order() would recover
+	//       performance thanks to improved cache locality.
+
+	// TODO: sort(): sort the elements in a value iterated range.
+	//       This is technically possible thanks the element indexes.
 };
 
 
 /**
  * BucketIterator implementation.
  */
-template <typename Derived>
+template <typename Derived, bool IsConst>
 class BucketIterator {
 private:
-	using container_type = Derived;
-	const container_type* m_container = nullptr;
+	using derived = Derived;
+	using container_type = std::conditional_t<IsConst, const derived, derived>;
+	container_type* m_container = nullptr;
 
 protected:
-	friend container_type;
-	using slot_iterator = typename container_type::slot_iterator;
-	using element_iter_t = typename container_type::elements_t::iterator;
-	using value_iterator = typename container_type::value_iterator;
+	friend derived;
+	using slot_iterator = typename derived::slot_iterator;
+	using value_t = std::conditional_t<IsConst
+									  , typename derived::value_t const
+									  , typename derived::value_t>;
+	using value_iterator = std::conditional_t<IsConst
+											 , typename derived::const_value_iterator
+											 , typename derived::value_iterator>;
 	friend value_iterator;
-
-	using value_t = typename container_type::value_t;
 
 private:
 	slot_iterator m_itr = -1;
@@ -723,50 +777,26 @@ protected:
 		return m_itr;
 	}
 
-	void advance(ptrdiff_t n = 1)
-	{
-		m_itr = m_container->advance(m_itr, n);
-	}
-
 	value_t* value() const
 	{
 		return m_container->element(m_itr);
 	}
 
-	value_t* value()
-	{
-		return m_container->element(m_itr);
-	}
-
 	// Only container_type is allowed to construct us from a slot_iterator.
-	explicit BucketIterator(const container_type * c, size_t index)
+	explicit BucketIterator(container_type * c, size_t index)
 		:  m_container(c), m_itr(index)
 	{}
 
 public:
 	using iterator_category = std::forward_iterator_tag;
 	using difference_type = std::ptrdiff_t;
-	using value_type = value_t;
-	using reference = value_t&;
-	using pointer = value_t*;
+	using value_type = std::conditional_t<IsConst, const value_t, value_t>;
+	using reference = std::conditional_t<IsConst, const value_t&, value_t&>;
+	using pointer = std::conditional_t<IsConst, const value_t*, value_t*>;
 
 	/// Invalid iterator.
 	BucketIterator() =default;
 
-	BucketIterator& operator++() {
-		advance();
-		return *this;
-	}
-
-	BucketIterator operator++(int) {
-		BucketIterator tmp = *this;
-		advance();
-		return tmp;
-	}
-
-	/**
-	 * All accesses to the value promises to never modify the key of it.
-	 */
 	reference operator*() {
 		return *value();
 	}
@@ -775,12 +805,15 @@ public:
 		return value();
 	}
 
-	const value_type& operator*() const {
-		return *value();
+	BucketIterator& operator++() {
+		m_itr = m_container->advance(m_itr, 1);
+		return *this;
 	}
 
-	const value_type* operator->() const {
-		return value();
+	BucketIterator operator++(int) {
+		auto tmp = *this;
+		m_itr = m_container->advance(m_itr, 1);
+		return tmp;
 	}
 
 	friend bool operator==(const BucketIterator& a, const BucketIterator& b)
@@ -804,31 +837,37 @@ public:
 		return !(*this == b);
 	}
 
-	operator value_iterator() {
-		return value_iterator(m_container, m_container->convert_iterator(m_itr));
+	operator value_iterator()
+	{
+		return value_iterator(m_container, m_container->element(m_itr));
 	}
+
+	// TODO: index() to return the pointed-to element's index in the element array.
 };
 
 /**
  * ValueIterator implementation.
  */
-template <typename Derived>
+template <typename Derived, bool IsConst>
 class ValueIterator {
 private:
-	using container_type = Derived;
-	const container_type* m_container = nullptr;
+	using derived = Derived;
+	using container_type = std::conditional_t<IsConst, const derived, derived>;
+	container_type* m_container = nullptr;
 
 protected:
-	friend container_type;
-	using slot_iterator = typename container_type::slot_iterator;
-	using element_iter_t = typename container_type::elements_t::iterator;
-
-	using local_iterator = container_type::local_iterator;
+	friend derived;
+	using slot_iterator = typename derived::slot_iterator;
+	using value_t = std::conditional_t<IsConst
+									  , typename derived::value_t const
+									  , typename derived::value_t>;
+	using local_iterator = std::conditional_t<IsConst
+											 , typename derived::const_local_iterator
+											 , typename derived::local_iterator>;
 	friend local_iterator;
 
-	using value_t = typename container_type::value_t;
 private:
-	element_iter_t m_itr;
+	value_t* m_itr;
 
 protected:
 
@@ -836,50 +875,29 @@ protected:
 		return m_container->convert_iterator(m_itr);
 	}
 
-	void advance(ptrdiff_t n = 1)
-	{
-		std::advance(m_itr, n);
-	}
-
 	value_t* value() const
 	{
-		return &*m_itr;
-	}
-
-	value_t* value()
-	{
-		return &*m_itr;
+		return m_itr;
 	}
 
 	// container_type and bucket_iterator is allowed to construct us.
-	explicit ValueIterator(const container_type * c, element_iter_t itr)
+	explicit ValueIterator(container_type * c, value_t* itr)
 		:  m_container(c), m_itr(itr)
 	{}
 
 public:
-	using iterator_category = std::forward_iterator_tag;
+	// TODO: implement actual random access
+	using iterator_category = std::random_access_iterator_tag;
 	using difference_type = std::ptrdiff_t;
-	using value_type = value_t;
-	using reference = value_t&;
-	using pointer = value_t*;
+	using value_type = std::conditional_t<IsConst, const value_t, value_t>;
+	using reference = std::conditional_t<IsConst, const value_t&, value_t&>;
+	using pointer = std::conditional_t<IsConst, const value_t*, value_t*>;
 
 	/// Invalid iterator.
 	ValueIterator() =default;
 
-	ValueIterator& operator++() {
-		advance();
-		return *this;
-	}
+	// Forward iterator
 
-	ValueIterator operator++(int) {
-		ValueIterator tmp = *this;
-		advance();
-		return tmp;
-	}
-
-	/**
-	 * All accesses to the value promises to never modify the key of it.
-	 */
 	reference operator*() {
 		return *value();
 	}
@@ -888,12 +906,13 @@ public:
 		return value();
 	}
 
-	const value_type& operator*() const {
-		return *value();
+	ValueIterator& operator++() {
+		++m_itr;
+		return *this;
 	}
 
-	const value_type* operator->() const {
-		return value();
+	ValueIterator operator++(int) {
+		return ValueIterator(m_container, m_itr++);
 	}
 
 	friend bool operator==(const ValueIterator& a, const ValueIterator& b)
@@ -904,6 +923,41 @@ public:
 	friend bool operator!=(const ValueIterator& a, const ValueIterator& b) {
 		return !(a == b);
 	};
+
+	// Bidirectional
+
+	ValueIterator& operator--() {
+		--m_itr;
+		return *this;
+	}
+
+	ValueIterator operator--(int) {
+		return ValueIterator(m_container, m_itr--);
+	}
+
+	// Random access
+
+	reference operator[] (difference_type n) const {
+		return value()[n];
+	}
+
+	ValueIterator& operator+= (difference_type n) {
+		m_itr += n;
+		return *this;
+	}
+
+	ValueIterator operator+ (difference_type n) const {
+		return ValueIterator(*this) += n;
+	}
+
+	ValueIterator& operator-= (difference_type n) {
+		m_itr -= n;
+		return *this;
+	}
+
+	ValueIterator operator- (difference_type n) const {
+		return ValueIterator(*this) -= n;
+	}
 
 	bool operator==(const local_iterator& other) const
 	{
@@ -917,19 +971,18 @@ public:
 		return !(*this == other);
 	}
 
-	operator local_iterator() const {
-		return bucket_iterator(m_container, m_container->convert_iterator(m_itr));
+	operator local_iterator() const
+	{
+		return local_iterator(m_container, slot());
 	}
 };
-
 /**
  * unordered_set<> like container
  */
 template <typename Value
 		, typename Hasher = std::hash<Value>
-		, typename Equal = std::equal_to<Value>
-		, typename KeyOf = IdentityKey<Value>>
-using RHashSet = HashtableAlgorithms<Value, Hasher, Equal, KeyOf>;
+		, typename Equal = std::equal_to<Value>>
+using RHashSet = HashtableAlgorithms<Value, void, Hasher, Equal>;
 
 
 /**
@@ -939,7 +992,7 @@ template <typename Key
 		 , typename T
 		 , typename Hasher = std::hash<Key>
 		 , typename Equal = std::equal_to<Key>>
-using RHashMap = HashtableAlgorithms<std::pair<Key, T>, Hasher, Equal, KeyOfPair<Key, T>>;
+using RHashMap = HashtableAlgorithms<Key, T, Hasher, Equal>;
 
 
 
