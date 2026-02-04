@@ -155,11 +155,11 @@ public:
 	using const_value_iterator = ValueIterator<HashtableAlgorithms, true>;
 
 private:
-	static constexpr float MAX_LOAD_FACTOR = 0.8f;
 	static constexpr slot_type SLOT_BITS = 8 * sizeof(slot_type);
 	// Count of DFH bits.
 	// In this version jh::HashtableAlgorithms<> m_dfh_shift is a constant.
 	static constexpr uint32_t DFH_SHIFT = SLOT_BITS / 2;
+	float m_max_load_factor = 0.8f;
 	// 2^shift capacity.
 	uint32_t m_shift = 0;
 	// Max count of elements before an rehash takes place.
@@ -272,7 +272,7 @@ protected:
 	{
 		// Grow capacity and throw away the metadata.
 		++m_shift;
-		m_max_fill = mcapacity() * MAX_LOAD_FACTOR;
+		m_max_fill = mcapacity() * m_max_load_factor;
 
 		// Delete first and then allocate to minimize peak memory usage.
 		m_metatable.reset();
@@ -280,10 +280,10 @@ protected:
 		std::fill_n(m_metatable.get(), mcapacity(), meta_t{0,0});
 	}
 
-	static constexpr size_t calculate_shift_for(size_t max_elements) noexcept
+	size_t calculate_shift_for(size_t max_elements) noexcept
 	{
 		size_t shift = 1;
-		while (static_cast<size_t>((size_t(1) << shift) * MAX_LOAD_FACTOR) < max_elements) {
+		while (static_cast<size_t>((size_t(1) << shift) * m_max_load_factor) < max_elements) {
 			++shift;
 		}
 		return shift;
@@ -294,7 +294,7 @@ protected:
 	{
 		// Set capacity and throw away the metadata.
 		m_shift = calculate_shift_for(max_elements);
-		m_max_fill = mcapacity() * MAX_LOAD_FACTOR;
+		m_max_fill = mcapacity() * m_max_load_factor;
 
 		m_metatable.reset();
 		m_metatable = std::make_unique<meta_t[]>(mcapacity());
@@ -524,8 +524,10 @@ protected:
 		erase_index(itr);
 	}
 
-	void swap(HashtableAlgorithms & cont) noexcept {
+	void swap(HashtableAlgorithms & cont) noexcept
+	{
 		using std::swap;
+		std::swap(m_max_load_factor, cont.m_max_load_factor);
 		std::swap(m_shift, cont.m_shift);
 		std::swap(m_max_fill, cont.m_max_fill);
 		std::swap(m_metatable, cont.m_metatable);
@@ -539,11 +541,13 @@ public:
     using hasher = hasher_t;
     using key_equal = equal_t;
     // todo: using allocator_type = ;
+	using size_type = std::size_t;
 
 	HashtableAlgorithms() =default;
 
 	HashtableAlgorithms(HashtableAlgorithms && cont) noexcept
-		: m_shift(std::exchange(cont.m_shift, 0))
+		: m_max_load_factor(std::exchange(cont.m_m_max_load_factor, 0))
+		, m_shift(std::exchange(cont.m_shift, 0))
 		, m_max_fill(std::exchange(cont.m_max_fill, 0))
 		, m_metatable(std::move(cont.m_metatable))
 		, m_elements(std::move(cont.m_elements))
@@ -552,7 +556,8 @@ public:
 	{}
 
 	HashtableAlgorithms(const HashtableAlgorithms & cont)
-		: m_shift(cont.m_shift)
+		: m_max_load_factor(cont.m_max_load_factor)
+		, m_shift(cont.m_shift)
 		, m_max_fill(cont.m_max_fill)
 		, m_metatable(new meta_t[cont.mcapacity()])
 		, m_elements(cont.m_elements)
@@ -700,6 +705,17 @@ public:
 	{
 		m_elements.clear();
 		std::fill_n(&m_metatable[0], mcapacity(), meta_t{0,0});
+	}
+
+	void max_load_factor(float lf)
+	{
+		m_max_load_factor = lf;
+		m_max_fill = mcapacity() * m_max_load_factor;
+	}
+
+	float max_load_factor() const
+	{
+		return m_max_load_factor;
 	}
 
 	void rehash(size_t new_size)
