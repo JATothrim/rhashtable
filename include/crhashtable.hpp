@@ -442,9 +442,9 @@ protected:
 	 * @return slot_iterator of the inserted m_elements.back()
 	 */
 	template <typename Item, typename... Args>
-	slot_iterator do_emplace(Item&& item, Args&&... args)
+	slot_iterator do_emplace(const size_t hash, Item&& item, Args&&... args)
 	{
-		auto& kv = m_elements.emplace_back(std::forward<Item>(item), std::forward<Args>(args)...);
+		m_elements.emplace_back(std::forward<Item>(item), std::forward<Args>(args)...);
 
 		if (!m_metatable) [[unlikely]] {
 			resize_and_clear(8);
@@ -454,7 +454,7 @@ protected:
 			return do_rehash();
 		}
 
-		auto itr = insert_index(m_hasher(this->to_key(kv)), m_elements.size() - 1);
+		auto itr = insert_index(hash, m_elements.size() - 1);
 		if (itr == mcapacity()) {
 			grow_and_clear();
 			return do_rehash();
@@ -465,10 +465,8 @@ protected:
 	/**
 	 * FIND()
 	 */
-	template <typename Item>
-	slot_iterator do_find(const Item& kval) const
+	slot_iterator do_find(const size_t hash, const Key& kval) const
 	{
-		const size_t hash = m_hasher(this->to_key(kval));
 		const auto* bucket = &const_at(modulus(hash));
 		slot_type dist = dfh_increment() + probe_hash(hash);
 
@@ -478,7 +476,7 @@ protected:
 				// This branch is before the below branch, to early return on empty home slots.
 				break;
 			} else if (bucket->dfh_hash == dist) {
-				if (m_equal(this->to_key(m_elements[bucket->nth]), this->to_key(kval))) {
+				if (m_equal(this->to_key(m_elements[bucket->nth]), kval)) {
 					// Found!
 					return std::distance(&const_at(0), bucket);
 				}
@@ -591,12 +589,12 @@ public:
 	/**
 	 * Construct value from @p key and pass additional arguments to the Value constructor.
 	 * @return local_iterator to the inserted element.
-	 * @note doesn't check if the key already exist.
+	 * @note Allows duplicate elements.
 	 */
 	template <typename F, typename... Args>
 	local_iterator emplace(F&& key, Args&&... args)
 	{
-		return local_iterator(this, this->do_emplace(std::forward<F>(key), std::forward<Args>(args)...));
+		return local_iterator(this, this->do_emplace(m_hasher(this->to_key(key)), std::forward<F>(key), std::forward<Args>(args)...));
 	}
 
 	/**
@@ -604,17 +602,17 @@ public:
 	 * @return local_iterator to the found or inserted element.
 	 */
 	template <typename F, typename... Args>
-	std::tuple<local_iterator, bool> emplace_unique(F&& key, Args&&... args)
+	std::pair<local_iterator, bool> emplace_unique(F&& key, Args&&... args)
 	{
+		const auto hash = m_hasher(this->to_key(key));
 		if (empty()) {
-			return {local_iterator(this, this->do_emplace(std::forward<F>(key), std::forward<Args>(args)...)), true};
+			return {local_iterator(this, this->do_emplace(hash, std::forward<F>(key), std::forward<Args>(args)...)), true};
 		}
-		// todo: need do_find_or_emplace() this calculates the hash *twice*
-		auto pos = this->do_find(key);
+		const auto pos = this->do_find(hash, this->to_key(key));
 		if (pos != mcapacity()) {
 			return {local_iterator(this, pos), false};
 		}
-		return {local_iterator(this, this->do_emplace(std::forward<F>(key), std::forward<Args>(args)...)), true};
+		return {local_iterator(this, this->do_emplace(hash, std::forward<F>(key), std::forward<Args>(args)...)), true};
 	}
 
 	/**
@@ -653,7 +651,7 @@ public:
 	{
 		if (empty())
 			return local_iterator(this, mcapacity());
-		return local_iterator(this, this->do_find(std::forward<F>(kval)));
+		return local_iterator(this, this->do_find(m_hasher(this->to_key(kval)), std::forward<F>(kval)));
 	}
 
 	bool empty() const
