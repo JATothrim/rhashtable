@@ -25,7 +25,7 @@
  * - Uses robin-hood hashing.
  * - Contiguous element data. (see caveat)
  * - 64-bit metadata per element: 16-bit distance-from-home, 16-bit has fingerprint and 32-bit index.
- * - Elements can be iterated in insertion order if ERASE() is never performed.
+ * - Elements can be iterated in insertion order until ERASE().
  *
  * 64-bit hash function is required. Non-avalanching or lower than 64 bits can severely disable performance.
  *
@@ -42,12 +42,12 @@
  *
  * The begin() returns a value_iterator that provides fast iteration over all elements. A value_iterator
  * can be converted back into a local_iterator. This however requires finding the metadata slot of the
- * pointed-to element. Such a conversion is still more efficient than defererencing the value_iterator and
- * using find().
+ * pointed-to element, but such a conversion is still more efficient than defererencing the value_iterator
+ * and using find().
  *
  * RHashMap< Key, Mapped> and RHashSet< Key> variants of the container are provided. The key_type cannot be
  * mutated once inserted: The map variant value_type is std::pair< const Key, Mapped>. The set variant
- * key_type and value_type are const Key.
+ * key_type and value_type are const Key. The value_type must be moveable.
  *
  */
 
@@ -368,7 +368,6 @@ protected:
 	/**
 	 * Element access.
 	 */
-	using Config<Key, Value>::to_key;
 
 	value_t* element(slot_iterator pos)
 	{
@@ -392,7 +391,7 @@ protected:
 		if (itr == m_elements.data() + m_elements.size()) {
 			return mcapacity();
 		}
-		auto hash = m_hasher(to_key(*itr));
+		auto hash = m_hasher(this->to_key(*itr));
 		index_type pos = std::distance(m_elements.data(), itr);
 		return find_index(hash, pos);
 	}
@@ -402,7 +401,7 @@ protected:
 		if (itr == m_elements.data() + m_elements.size()) {
 			return mcapacity();
 		}
-		auto hash = m_hasher(to_key(*itr));
+		auto hash = m_hasher(this->to_key(*itr));
 		index_type pos = std::distance(m_elements.data(), itr);
 		return find_index(hash, pos);
 	}
@@ -428,7 +427,7 @@ protected:
 
 		// Re-build metadata.
 		for (size_t i = 0; i < m_elements.size(); ++i) {
-			last = insert_index(m_hasher(to_key(m_elements[i])), i);
+			last = insert_index(m_hasher(this->to_key(m_elements[i])), i);
 			if (last == mcapacity()) {
 				// Oops, too many collisions.
 				grow_and_clear();
@@ -455,7 +454,7 @@ protected:
 			return do_rehash();
 		}
 
-		auto itr = insert_index(m_hasher(to_key(kv)), m_elements.size() - 1);
+		auto itr = insert_index(m_hasher(this->to_key(kv)), m_elements.size() - 1);
 		if (itr == mcapacity()) {
 			grow_and_clear();
 			return do_rehash();
@@ -469,7 +468,7 @@ protected:
 	template <typename Item>
 	slot_iterator do_find(const Item& kval) const
 	{
-		const size_t hash = m_hasher(to_key(kval));
+		const size_t hash = m_hasher(this->to_key(kval));
 		const auto* bucket = &const_at(modulus(hash));
 		slot_type dist = dfh_increment() + probe_hash(hash);
 
@@ -479,7 +478,7 @@ protected:
 				// This branch is before the below branch, to early return on empty home slots.
 				break;
 			} else if (bucket->dfh_hash == dist) {
-				if (m_equal(to_key(m_elements[bucket->nth]), to_key(kval))) {
+				if (m_equal(this->to_key(m_elements[bucket->nth]), this->to_key(kval))) {
 					// Found!
 					return std::distance(&const_at(0), bucket);
 				}
@@ -504,7 +503,7 @@ protected:
 		if (index != at_end) [[likely]] {
 			// Erase the element: find where the m_elements.back() is in the metadata table,
 			// and redirect it to itr's slot.
-			const auto end_hash = m_hasher(to_key(m_elements.back()));
+			const auto end_hash = m_hasher(this->to_key(m_elements.back()));
 			const auto rm = find_index(end_hash, at_end);
 			at(rm).nth = index;
 			// Move the element.
