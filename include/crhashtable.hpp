@@ -510,15 +510,6 @@ protected:
 
 		// Pop-back.
 		m_elements.pop_back();
-
-#if 0
-		if (at_end < size_limit_low()) [[unlikely]] {
-			// Too sparse/wasting memory.
-			resize_and_clear(at_end);
-			do_rehash();
-			return;
-		}
-#endif
 		erase_index(itr);
 	}
 
@@ -607,29 +598,44 @@ public:
 	/**
 	 * Erase element at @p rm.
 	 * @post All references and iterators are invalidated.
+	 * @return local_iterator to a unspecified element or end().
+	 *         end() can be returned before the container is empty.
+	 * @note @p rm must be a dereferenceable.
 	 */
-	void erase(local_iterator rm)
+	local_iterator erase(local_iterator rm)
 	{
 		this->do_erase(rm.slot());
+		return const_at(rm.slot()).dfh_hash ? rm : local_iterator(this, mcapacity());
+	}
+
+	/**
+	 * Erase element an equivalent to @p kval
+	 * @post All references and iterators are invalidated if non-zero value is returned.
+	 */
+	size_type erase(const Key& kval)
+	{
+		const auto pos = this->do_find(m_hasher(kval), kval);
+		if (pos == mcapacity()) {
+			return 0;
+		}
+		this->do_erase(pos);
+		return 1;
 	}
 
 	/**
 	 * Erase element at @p rm.
 	 * @post All references and iterators are invalidated.
-	 * @return value_iterator to an element or end(). To which element
-	 *         the returned non-end() iterator points to is unspecified,
-	 * 		   but it is never before rm.
+	 * @return value_iterator to an adjacent element (before or after) or end().
+	 *         end() is returned if container was emptied.
 	 */
 	value_iterator erase(value_iterator rm)
 	{
 		size_t dist = std::distance(m_elements.data(), rm.value());
 		do_erase(rm.slot());
 
-		if (dist < m_elements.size()) {
-			return value_iterator(this, m_elements.data() + dist);
-		} else {
-			return end();
-		}
+		if (dist > m_elements.size())
+			--dist;
+		return value_iterator(this, m_elements.data() + dist);
 	}
 
 	/**
@@ -692,6 +698,20 @@ public:
 	{
 		m_elements.clear();
 		std::fill_n(&m_metatable[0], mcapacity(), meta_t{0,0});
+	}
+
+	/**
+	 * Reduce container memory usage.
+	 * @post All references and iterators are invalidated.
+	 */
+	void shrink_to_fit()
+	{
+		m_elements.shrink_to_fit();
+		if (m_elements.size() < size_limit_low()) {
+			// Too sparse/wasting memory.
+			resize_and_clear(m_elements.size());
+			do_rehash();
+		}
 	}
 
 	void max_load_factor(float lf)
