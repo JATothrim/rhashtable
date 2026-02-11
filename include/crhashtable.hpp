@@ -276,8 +276,8 @@ protected:
 
 		// Delete first and then allocate to minimize peak memory usage.
 		m_metatable.reset();
+		// Zero initialized for no extra cost.
 		m_metatable = std::make_unique<meta_t[]>(mcapacity());
-		std::fill_n(m_metatable.get(), mcapacity(), meta_t{0,0});
 	}
 
 	size_t calculate_shift_for(size_t max_elements) noexcept
@@ -297,8 +297,8 @@ protected:
 		m_max_fill = mcapacity() * m_max_load_factor;
 
 		m_metatable.reset();
+		// Zero initialized for no extra cost.
 		m_metatable = std::make_unique<meta_t[]>(mcapacity());
-		std::fill_n(m_metatable.get(), mcapacity(), meta_t{0,0});
 	}
 
 	inline slot_iterator insert_index(size_t hash, index_type elementIndex) noexcept
@@ -354,7 +354,7 @@ protected:
 		// The DFH is consequently decremented by one.
 		auto* bucket = &at(itr);
 		auto* prev = bucket;
-		this->next_bucket(itr, bucket);
+		this->next_bucket(bucket);
 
 		while (bucket->dfh_hash >= dfh_increment() * 2) {
 			prev->dfh_hash = bucket->dfh_hash - dfh_increment();
@@ -578,8 +578,8 @@ public:
 	~HashtableAlgorithms() =default;
 
 	/**
-	 * Construct value from @p key and pass additional arguments to the Value constructor.
-	 * @return local_iterator to the inserted element.
+	 * Construct value_type from @p key and pass additional arguments to the value_type constructor.
+	 * @return local_iterator to the inserted element or to a existing element if the key already exist.
 	 */
 	template <typename F, typename... Args>
 	std::pair<local_iterator, bool> emplace(F&& key, Args&&... args)
@@ -600,7 +600,7 @@ public:
 	 * @post All references and iterators are invalidated.
 	 * @return local_iterator to a unspecified element or end().
 	 *         end() can be returned before the container is empty.
-	 * @note @p rm must be a dereferenceable.
+	 * @pre @p rm must be a dereferenceable.
 	 */
 	local_iterator erase(local_iterator rm)
 	{
@@ -609,7 +609,7 @@ public:
 	}
 
 	/**
-	 * Erase element an equivalent to @p kval
+	 * Erase a element equivalent to @p kval
 	 * @post All references and iterators are invalidated if non-zero value is returned.
 	 */
 	size_type erase(const Key& kval)
@@ -625,8 +625,9 @@ public:
 	/**
 	 * Erase element at @p rm.
 	 * @post All references and iterators are invalidated.
-	 * @return value_iterator to an adjacent element (before or after) or end().
+	 * @return value_iterator to an adjacent element of @p rm (before or after) or end().
 	 *         end() is returned if container was emptied.
+	 * @pre @p rm must be a dereferenceable.
 	 */
 	value_iterator erase(value_iterator rm)
 	{
