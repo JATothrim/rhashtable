@@ -650,6 +650,25 @@ public:
 		return local_iterator(this, this->do_find(m_hasher(this->to_key(kval)), std::forward<F>(kval)));
 	}
 
+	template <typename F>
+	const_local_iterator find(F&& kval) const
+	{
+		if (empty())
+			return const_local_iterator(this, mcapacity());
+		return const_local_iterator(this, this->do_find(m_hasher(this->to_key(kval)), std::forward<F>(kval)));
+	}
+
+
+	bool contains(const Key& kval) const
+	{
+		return find(kval) != end();
+	}
+
+	size_t count(const Key& kval) const
+	{
+		return find(kval) == end() ? 0 : 1;
+	}
+
 	bool empty() const
 	{
 		return m_elements.empty();
@@ -695,6 +714,21 @@ public:
 		return const_local_iterator(this, mcapacity());
 	}
 
+	value_iterator vend()
+	{
+		return value_iterator(this, m_elements.data() + m_elements.size());
+	}
+
+	const_value_iterator vend() const
+	{
+		return const_value_iterator(this, m_elements.data() + m_elements.size());
+	}
+
+	const_value_iterator vcend() const
+	{
+		return const_value_iterator(this, m_elements.data() + m_elements.size());
+	}
+
 	void clear()
 	{
 		m_elements.clear();
@@ -724,6 +758,11 @@ public:
 	float max_load_factor() const
 	{
 		return m_max_load_factor;
+	}
+
+	float load_factor() const
+	{
+		return size() / bucket_count();
 	}
 
 	void rehash(size_t new_size)
@@ -828,6 +867,10 @@ public:
 		return value();
 	}
 
+	const pointer operator->() const {
+		return value();
+	}
+
 	BucketIterator& operator++() {
 		m_itr = m_container->advance(m_itr, 1);
 		return *this;
@@ -860,9 +903,14 @@ public:
 		return !(*this == b);
 	}
 
-	operator value_iterator()
+	operator value_iterator() const
 	{
 		return value_iterator(m_container, m_container->element(m_itr));
+	}
+
+	value_iterator as_value_iterator() const
+	{
+		return *this;
 	}
 
 	// TODO: index() to return the pointed-to element's index in the element array.
@@ -926,6 +974,10 @@ public:
 	}
 
 	pointer operator->() {
+		return value();
+	}
+
+	const pointer operator->() const {
 		return value();
 	}
 
