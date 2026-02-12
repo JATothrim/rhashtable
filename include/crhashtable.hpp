@@ -165,9 +165,10 @@ private:
 	elements_t m_elements;
 	// Metadata table.
 	meta_t* m_metatable = nullptr;
+	const meta_t* m_metatable_end = nullptr;
+	// </cacheline>
 	// 2^shift capacity.
 	uint32_t m_shift = 0;
-	// </cacheline>
 	// Max count of elements before an rehash takes place.
 	size_t m_max_fill = 0;
 	float m_max_load_factor = 0.8f;
@@ -238,10 +239,9 @@ protected:
 	template<typename Meta>
 	inline void next_bucket(slot_iterator& index, Meta*& ptr) const noexcept
 	{
-		if (index == mcapacity() - 1) [[unlikely]] {
+		++index;
+		if (index == mcapacity()) {
 			index = 0;
-		} else {
-			++index;
 		}
 		ptr = &m_metatable[index];
 	}
@@ -250,10 +250,9 @@ protected:
 	inline void next_bucket(Meta*& ptr) const noexcept
 	{
 		// Index-less.
-		if (ptr == m_metatable + mcapacity() - 1) [[unlikely]] {
+		++ptr;
+		if (ptr == m_metatable_end) {
 			ptr = m_metatable;
-		} else {
-			++ptr;
 		}
 	}
 
@@ -290,6 +289,7 @@ protected:
 		delete[] m_metatable;
 		m_metatable = new meta_t[mcapacity()];
 		std::memset(m_metatable, 0, sizeof(meta_t) * mcapacity());
+		m_metatable_end = m_metatable + mcapacity();
 	}
 
 	/// Resize for at least @p capacity keys.
@@ -302,6 +302,7 @@ protected:
 		delete[] m_metatable;
 		m_metatable = new meta_t[mcapacity()];
 		std::memset(m_metatable, 0, sizeof(meta_t) * mcapacity());
+		m_metatable_end = m_metatable + mcapacity();
 	}
 
 	inline slot_iterator insert_index(size_t hash, index_type elementIndex) noexcept
@@ -318,13 +319,13 @@ protected:
 			this->next_bucket(bucket);
 		}
 
-		const slot_iterator slot = std::distance(&at(0), bucket);
+		auto* const element_bucket = bucket;
 
 		// Rich slots are shifted forwards to make space for the poor.
 		for(;;) {
 			std::swap(*bucket, curr);
 			if (!curr.dfh_hash) {
-				return slot;
+				return std::distance(&at(0), element_bucket);
 			} else if (dfh_overflow(curr.dfh_hash)) [[unlikely]] {
 				// ran out of DFH bits, the metadata now trash.
 				return mcapacity();
@@ -514,6 +515,7 @@ protected:
 
 		std::swap(m_elements, cont.m_elements);
 		std::swap(m_metatable, cont.m_metatable);
+		std::swap(m_metatable_end, cont.m_metatable_end);
 		std::swap(m_shift, cont.m_shift);
 		std::swap(m_max_fill, cont.m_max_fill);
 		std::swap(m_max_load_factor, cont.m_max_load_factor);
@@ -533,6 +535,7 @@ public:
 	HashtableAlgorithms(HashtableAlgorithms && cont) noexcept
 		: m_elements(std::move(cont.m_elements))
 		, m_metatable(std::exchange(cont.m_metatable, nullptr))
+		, m_metatable_end(std::exchange(cont.m_metatable_end, nullptr))
 		, m_shift(std::exchange(cont.m_shift, 0))
 		, m_max_fill(std::exchange(cont.m_max_fill, 0))
 		, m_max_load_factor(std::exchange(cont.m_m_max_load_factor, 0))
@@ -542,6 +545,7 @@ public:
 
 	HashtableAlgorithms(const HashtableAlgorithms & cont)
 		: m_elements(cont.m_elements)
+		, m_metatable_end(m_metatable + cont.mcapacity())
 		, m_shift(cont.m_shift)
 		, m_max_fill(cont.m_max_fill)
 		, m_max_load_factor(cont.m_max_load_factor)
