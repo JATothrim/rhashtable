@@ -10,14 +10,9 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
-#include <limits>
-#include <memory>
-#include <stdexcept>
-#include <tuple>
-#include <type_traits>
+#include <cstring>
 #include <utility>
 #include <vector>
-#include <cmath>
 
 /**
  * Hashtable by JATothrim.
@@ -161,19 +156,21 @@ private:
 	// Count of DFH bits.
 	// In this version jh::HashtableAlgorithms<> m_dfh_shift is a constant.
 	static constexpr uint32_t DFH_SHIFT = SLOT_BITS / 2;
-	float m_max_load_factor = 0.8f;
-	// 2^shift capacity.
-	uint32_t m_shift = 0;
-	// Max count of elements before an rehash takes place.
-	size_t m_max_fill = 0;
 
-	// Metadata table.
-	std::unique_ptr<meta_t[]> m_metatable;
+	// Note: the members are ordered to minimize table size.
 
 	// Actual element data.
 	using value_t = typename Config<Key, Value>::element_type;
 	using elements_t = std::vector<typename Config<Key, Value>::store_type>;
 	elements_t m_elements;
+	// Metadata table.
+	meta_t* m_metatable = nullptr;
+	// 2^shift capacity.
+	uint32_t m_shift = 0;
+	// </cacheline>
+	// Max count of elements before an rehash takes place.
+	size_t m_max_fill = 0;
+	float m_max_load_factor = 0.8f;
 	hasher_t m_hasher;
 	equal_t m_equal;
 
@@ -253,8 +250,8 @@ protected:
 	inline void next_bucket(Meta*& ptr) const noexcept
 	{
 		// Index-less.
-		if (ptr == m_metatable.get() + mcapacity() - 1) [[unlikely]] {
-			ptr = m_metatable.get();
+		if (ptr == m_metatable + mcapacity() - 1) [[unlikely]] {
+			ptr = m_metatable;
 		} else {
 			++ptr;
 		}
@@ -290,9 +287,9 @@ protected:
 		m_max_fill = mcapacity() * m_max_load_factor;
 
 		// Delete first and then allocate to minimize peak memory usage.
-		m_metatable.reset();
-		// Zero initialized for no extra cost.
-		m_metatable = std::make_unique<meta_t[]>(mcapacity());
+		delete[] m_metatable;
+		m_metatable = new meta_t[mcapacity()];
+		std::memset(m_metatable, 0, sizeof(meta_t) * mcapacity());
 	}
 
 	/// Resize for at least @p capacity keys.
@@ -302,9 +299,9 @@ protected:
 		m_shift = calculate_shift_for(max_elements);
 		m_max_fill = mcapacity() * m_max_load_factor;
 
-		m_metatable.reset();
-		// Zero initialized for no extra cost.
-		m_metatable = std::make_unique<meta_t[]>(mcapacity());
+		delete[] m_metatable;
+		m_metatable = new meta_t[mcapacity()];
+		std::memset(m_metatable, 0, sizeof(meta_t) * mcapacity());
 	}
 
 	inline slot_iterator insert_index(size_t hash, index_type elementIndex) noexcept
@@ -514,11 +511,12 @@ protected:
 	void swap(HashtableAlgorithms & cont) noexcept
 	{
 		using std::swap;
-		std::swap(m_max_load_factor, cont.m_max_load_factor);
+
+		std::swap(m_elements, cont.m_elements);
+		std::swap(m_metatable, cont.m_metatable);
 		std::swap(m_shift, cont.m_shift);
 		std::swap(m_max_fill, cont.m_max_fill);
-		std::swap(m_metatable, cont.m_metatable);
-		std::swap(m_elements, cont.m_elements);
+		std::swap(m_max_load_factor, cont.m_max_load_factor);
 		std::swap(m_hasher, cont.m_hasher);
 		std::swap(m_equal, cont.m_equal);
 	}
@@ -533,25 +531,27 @@ public:
 	HashtableAlgorithms() =default;
 
 	HashtableAlgorithms(HashtableAlgorithms && cont) noexcept
-		: m_max_load_factor(std::exchange(cont.m_m_max_load_factor, 0))
+		: m_elements(std::move(cont.m_elements))
+		, m_metatable(std::exchange(cont.m_metatable, nullptr))
 		, m_shift(std::exchange(cont.m_shift, 0))
 		, m_max_fill(std::exchange(cont.m_max_fill, 0))
-		, m_metatable(std::move(cont.m_metatable))
-		, m_elements(std::move(cont.m_elements))
+		, m_max_load_factor(std::exchange(cont.m_m_max_load_factor, 0))
 		, m_hasher(std::move(cont.m_hasher))
 		, m_equal(std::move(cont.m_equal))
 	{}
 
 	HashtableAlgorithms(const HashtableAlgorithms & cont)
-		: m_max_load_factor(cont.m_max_load_factor)
+		: m_elements(cont.m_elements)
 		, m_shift(cont.m_shift)
 		, m_max_fill(cont.m_max_fill)
-		, m_metatable(new meta_t[cont.mcapacity()])
-		, m_elements(cont.m_elements)
+		, m_max_load_factor(cont.m_max_load_factor)
 		, m_hasher(cont.m_hasher)
 		, m_equal(cont.m_equal)
 	{
-		std::copy_n(cont.m_metatable.get(), cont.mcapacity(), m_metatable.get());
+		if (cont.m_metatable) {
+			m_metatable = new meta_t[cont.mcapacity()];
+			std::copy_n(cont.m_metatable, cont.mcapacity(), m_metatable);
+		}
 	}
 
 	HashtableAlgorithms& operator= (const HashtableAlgorithms& cont)
@@ -573,7 +573,10 @@ public:
 		rehash(max_elements);
 	}
 
-	~HashtableAlgorithms() =default;
+	~HashtableAlgorithms()
+	{
+		delete[] m_metatable;
+	}
 
 	/**
 	 * Construct value_type from @p key and pass additional arguments to the value_type constructor.
