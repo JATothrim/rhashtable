@@ -35,10 +35,12 @@
  * element is moved into the erased element, and the metadata is updated. ERASE() operation therefore
  * invalidates all references and iterators to elements.
  *
- * The container uses an local_iterator type for emplace(), find(), erase() and end(). The local_iterator
- * is not optimal for iterating through the container, or repeated access, since it iterates over metadata
- * slots. The local_iterator is however efficiently convertible to a value_iterator that provides iteration
- * over the container's element array. The past-end local_iterator and value_iterator compare equal.
+ * The container uses an local_iterator type for emplace(), find(), erase() and end(). Range-for loops
+ * should always use the jh::vrange() helper to use the vend() instead of end() because of this. The
+ * local_iterator is not optimal for iterating through the container, or repeated access, since it iterates
+ * over metadata slots. The local_iterator is however efficiently convertible to a value_iterator that
+ * provides iteration over the container's element array. The past-end local_iterator and value_iterator
+ * compare equal.
  *
  * The begin() returns a value_iterator that provides fast iteration over all elements. A value_iterator
  * can be converted back into a local_iterator. This however requires finding the metadata slot of the
@@ -808,6 +810,56 @@ public:
 	//       This is technically possible thanks the element indexes.
 };
 
+
+template<typename X>
+class value_range
+{
+private:
+	X& cont;
+public:
+	explicit value_range(X & x) : cont(x) {}
+
+	auto begin()
+	{
+		return cont.begin();
+	}
+
+	auto begin() const
+	{
+		return cont.begin();
+	}
+
+	auto cbegin() const
+	{
+		return cont.begin();
+	}
+
+	auto end()
+	{
+		return cont.vend();
+	}
+
+	auto end() const
+	{
+		return cont.vend();
+	}
+
+	auto cend() const
+	{
+		return cont.vcend();
+	}
+};
+
+/**
+ * Plainly iterating the container with range-for would result in non-optimal code of converting the
+ * past-end local_iterator as returned by end() to a value_iterator for the non-equal iterator comparison.
+ * The vrange() helper allows using the vend() in a range-for loops.
+ */
+template<typename X>
+auto vrange(X & x) -> value_range<X>
+{
+	return value_range_t(x);
+}
 
 /**
  * BucketIterator implementation.
