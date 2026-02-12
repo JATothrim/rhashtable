@@ -115,9 +115,9 @@ protected:
 		return value;
 	}
 
-	static constexpr void move_assign(element_type& dst, element_type& src)
+	static constexpr void move_assign(store_type& dst, store_type& src)
 	{
-		const_cast<Key&>(dst) = std::move(const_cast<Key&>(src));
+		dst = std::move(src);
 	}
 public:
 	// Public API typedefs.
@@ -183,6 +183,11 @@ protected:
 	 * Metadata access.
 	 */
 
+	inline size_t mcapacity() const noexcept
+	{
+		return size_t(1) << m_shift;
+	}
+
 	inline meta_t& at(slot_iterator i) noexcept
 	{
 		return m_metatable[i];
@@ -213,20 +218,15 @@ protected:
 	}
 
 	// Can dfh_hash be incremented by dfh_increment()?
-	static constexpr bool dfh_at_max(slot_type dfh_hash) noexcept
+	static constexpr bool dfh_overflow(slot_type dfh_hash) noexcept
 	{
-		return dfh_hash > (~dfh_increment());
+		return dfh_hash >= ((~slot_type(0)) << (SLOT_BITS - DFH_SHIFT));
 	}
 
 	static constexpr slot_type probe_hash(size_t hash_value) noexcept
 	{
 		// Grab the low m_dfh_shift bits.
 		return hash_value & ((slot_type(1) << DFH_SHIFT) - 1);
-	}
-
-	inline size_t mcapacity() const noexcept
-	{
-		return size_t(1) << m_shift;
 	}
 
 	inline size_t modulus(size_t hash_value) const noexcept
@@ -241,7 +241,7 @@ protected:
 	template<typename Meta>
 	inline void next_bucket(slot_iterator& index, Meta*& ptr) const noexcept
 	{
-		if (index + 1 == mcapacity()) [[unlikely]] {
+		if (index == mcapacity() - 1) [[unlikely]] {
 			index = 0;
 		} else {
 			++index;
@@ -253,7 +253,7 @@ protected:
 	inline void next_bucket(Meta*& ptr) const noexcept
 	{
 		// Index-less.
-		if (ptr + 1 == m_metatable.get() + mcapacity()) [[unlikely]] {
+		if (ptr == m_metatable.get() + mcapacity() - 1) [[unlikely]] {
 			ptr = m_metatable.get();
 		} else {
 			++ptr;
@@ -270,25 +270,29 @@ protected:
 		return m_max_fill / 2;
 	}
 
-	void grow_and_clear()
-	{
-		// Grow capacity and throw away the metadata.
-		++m_shift;
-		m_max_fill = mcapacity() * m_max_load_factor;
-
-		// Delete first and then allocate to minimize peak memory usage.
-		m_metatable.reset();
-		// Zero initialized for no extra cost.
-		m_metatable = std::make_unique<meta_t[]>(mcapacity());
-	}
-
-	size_t calculate_shift_for(size_t max_elements) noexcept
+	size_t calculate_shift_for(size_t max_elements) const noexcept
 	{
 		size_t shift = 1;
 		while (static_cast<size_t>((size_t(1) << shift) * m_max_load_factor) < max_elements) {
 			++shift;
 		}
 		return shift;
+	}
+
+	void grow_and_clear()
+	{
+		// Grow capacity and throw away the metadata.
+		if (!m_shift) {
+			m_shift = calculate_shift_for(8);
+		} else {
+			++m_shift;
+		}
+		m_max_fill = mcapacity() * m_max_load_factor;
+
+		// Delete first and then allocate to minimize peak memory usage.
+		m_metatable.reset();
+		// Zero initialized for no extra cost.
+		m_metatable = std::make_unique<meta_t[]>(mcapacity());
 	}
 
 	/// Resize for at least @p capacity keys.
@@ -312,7 +316,7 @@ protected:
 		// Find insertion point, i.e. skip over too poor slots.
 		auto* bucket = &at(modulus(hash));
 		while (curr.dfh_hash <= bucket->dfh_hash) {
-			assert(!dfh_at_max(curr.dfh_hash));
+			assert(!dfh_overflow(curr.dfh_hash));
 			curr.dfh_hash += dfh_increment();
 			this->next_bucket(bucket);
 		}
@@ -323,16 +327,14 @@ protected:
 		for(;;) {
 			std::swap(*bucket, curr);
 			if (!curr.dfh_hash) {
-				break;
-			} else if (dfh_at_max(curr.dfh_hash)) {
+				return slot;
+			} else if (dfh_overflow(curr.dfh_hash)) [[unlikely]] {
 				// ran out of DFH bits, the metadata now trash.
 				return mcapacity();
 			}
 			curr.dfh_hash += dfh_increment();
 			this->next_bucket(bucket);
 		}
-
-		return slot;
 	}
 
 	inline slot_iterator find_index(size_t hash, uint32_t elementIndex) const noexcept
@@ -448,10 +450,8 @@ protected:
 	{
 		m_elements.emplace_back(std::forward<Item>(item), std::forward<Args>(args)...);
 
-		if (!m_metatable) [[unlikely]] {
-			resize_and_clear(8);
-		} else if (m_elements.size() >= size_limit()) [[unlikely]] {
-			// load-factor is too high => rehash.
+		if (m_elements.size() >= size_limit()) [[unlikely]] {
+			// load-factor is too high => rehash or no metatable is allocated yet.
 			grow_and_clear();
 			return do_rehash();
 		}
@@ -469,27 +469,23 @@ protected:
 	 */
 	slot_iterator do_find(const size_t hash, const Key& kval) const
 	{
-		const auto* bucket = &const_at(modulus(hash));
 		slot_type dist = dfh_increment() + probe_hash(hash);
+		const auto* bucket = &const_at(modulus(hash));
 
 		for (;;) {
 			if (bucket->dfh_hash < dist) {
 				// DFH is greater than inserted key can have => key not found.
 				// This branch is before the below branch, to early return on empty home slots.
-				break;
+				return mcapacity();
 			} else if (bucket->dfh_hash == dist) {
-				if (m_equal(this->to_key(m_elements[bucket->nth]), kval)) {
+				if (m_equal(kval, this->to_key(m_elements[bucket->nth]))) {
 					// Found!
 					return std::distance(&const_at(0), bucket);
 				}
-			} else if (dfh_at_max(dist)) {
-				// reached max DFH, the worst case of 2^16-2 probes.
-				break;
 			}
 			this->next_bucket(bucket);
 			dist += dfh_increment();
 		}
-		return mcapacity();
 	}
 
 	/**
@@ -587,10 +583,7 @@ public:
 	std::pair<local_iterator, bool> emplace(F&& key, Args&&... args)
 	{
 		const auto hash = m_hasher(this->to_key(key));
-		if (this->empty()) {
-			return {local_iterator(this, this->do_emplace(hash, std::forward<F>(key), std::forward<Args>(args)...)), true};
-		}
-		const auto pos = this->do_find(hash, this->to_key(key));
+		const auto pos = this->empty() ? mcapacity() : this->do_find(hash, this->to_key(key));
 		if (pos != mcapacity()) {
 			return {local_iterator(this, pos), false};
 		}
@@ -647,17 +640,15 @@ public:
 	template <typename F>
 	local_iterator find(F&& kval)
 	{
-		if (empty())
-			return local_iterator(this, mcapacity());
-		return local_iterator(this, this->do_find(m_hasher(this->to_key(kval)), std::forward<F>(kval)));
+		auto pos = empty() ? mcapacity() : this->do_find(m_hasher(this->to_key(kval)), std::forward<F>(kval));
+		return local_iterator(this, pos);
 	}
 
 	template <typename F>
 	const_local_iterator find(F&& kval) const
 	{
-		if (empty())
-			return const_local_iterator(this, mcapacity());
-		return const_local_iterator(this, this->do_find(m_hasher(this->to_key(kval)), std::forward<F>(kval)));
+		auto pos = empty() ? mcapacity() : this->do_find(m_hasher(this->to_key(kval)), std::forward<F>(kval));
+		return local_iterator(this, pos);
 	}
 
 
@@ -798,13 +789,6 @@ public:
 
 	// TODO: implement more of STL unordered_map API.
 
-	// TODO: cache_order() and find_cached():
-	//       sort elements such that find_cached() can assume
-	//       the elements appear in the same order as in the metatable.
-	//       This would enable better lookup performance, since the element
-	//       indirection only needs to happen once per lookup.
-	//       If lots of erasures had happened, cache_order() would recover
-	//       performance thanks to improved cache locality.
 
 	// TODO: sort(): sort the elements in a value iterated range.
 	//       This is technically possible thanks the element indexes.
