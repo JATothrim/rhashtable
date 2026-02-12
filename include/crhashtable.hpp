@@ -24,7 +24,7 @@
  *
  * - Uses robin-hood hashing.
  * - Contiguous element data. (see caveat)
- * - 64-bit metadata per element: 16-bit distance-from-home, 16-bit has fingerprint and 32-bit index.
+ * - 64-bit metadata per element: 16-bit distance-from-home, 16-bit hash fingerprint and 32-bit index.
  * - Elements can be iterated in insertion order until ERASE().
  *
  * 64-bit hash function is required. Non-avalanching or lower than 64 bits can severely disable performance.
@@ -589,23 +589,12 @@ public:
 	/**
 	 * Construct value from @p key and pass additional arguments to the Value constructor.
 	 * @return local_iterator to the inserted element.
-	 * @note Allows duplicate elements.
 	 */
 	template <typename F, typename... Args>
-	local_iterator emplace(F&& key, Args&&... args)
-	{
-		return local_iterator(this, this->do_emplace(m_hasher(this->to_key(key)), std::forward<F>(key), std::forward<Args>(args)...));
-	}
-
-	/**
-	 * Find @p key and if not found construct a new value forwarding arguments to the Value constructor.
-	 * @return local_iterator to the found or inserted element.
-	 */
-	template <typename F, typename... Args>
-	std::pair<local_iterator, bool> emplace_unique(F&& key, Args&&... args)
+	std::pair<local_iterator, bool> emplace(F&& key, Args&&... args)
 	{
 		const auto hash = m_hasher(this->to_key(key));
-		if (empty()) {
+		if (this->empty()) {
 			return {local_iterator(this, this->do_emplace(hash, std::forward<F>(key), std::forward<Args>(args)...)), true};
 		}
 		const auto pos = this->do_find(hash, this->to_key(key));
@@ -1006,8 +995,6 @@ template <typename Key
 		 , typename Hasher = std::hash<Key>
 		 , typename Equal = std::equal_to<Key>>
 using RHashMap = HashtableAlgorithms<Key, T, Hasher, Equal>;
-
-
 
 } // namespace jh
 
