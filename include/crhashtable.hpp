@@ -172,7 +172,7 @@ private:
 	uint32_t m_shift = 0;
 	// Max count of elements before an rehash takes place.
 	size_t m_max_fill = 0;
-	float m_max_load_factor = 0.8f;
+	size_t m_max_load_factor = 800; // 80.0%, 800/1000
 	hasher_t m_hasher;
 	equal_t m_equal;
 
@@ -257,10 +257,20 @@ protected:
 		return m_max_fill / 2;
 	}
 
+	inline size_t max_fill_from_pow2(size_t pow2) const noexcept
+	{
+		// Floating point would be *easier*, but this would sprinkle the already slow emplace()
+		// with FPU instructions. Thus, do fixed-point computation here.
+		return ((pow2 * m_max_load_factor) % (pow2 * 1000)) / 1000;
+	}
+
 	size_t calculate_shift_for(size_t max_elements) const noexcept
 	{
-		size_t shift = 1;
-		while (static_cast<size_t>((size_t(1) << shift) * m_max_load_factor) < max_elements) {
+
+		int shift = 1;
+		size_t pow2 = 2;
+		while (max_fill_from_pow2(pow2) < max_elements) {
+			pow2 *= 2;
 			++shift;
 		}
 		return shift;
@@ -275,7 +285,7 @@ protected:
 		} else {
 			++m_shift;
 		}
-		m_max_fill = mcapacity() * m_max_load_factor;
+		m_max_fill = max_fill_from_pow2(mcapacity());
 
 		// Delete first and then allocate to minimize peak memory usage.
 		delete[] m_metatable;
@@ -289,7 +299,7 @@ protected:
 	{
 		// Set capacity and throw away the metadata.
 		m_shift = calculate_shift_for(max_elements);
-		m_max_fill = mcapacity() * m_max_load_factor;
+		m_max_fill = max_fill_from_pow2(mcapacity());
 
 		delete[] m_metatable;
 		m_metatable = new meta_t[mcapacity()];
@@ -739,13 +749,13 @@ public:
 
 	void max_load_factor(float lf)
 	{
-		m_max_load_factor = lf;
-		m_max_fill = mcapacity() * m_max_load_factor;
+		m_max_load_factor = lf * 1000;
+		m_max_fill = max_fill_from_pow2(mcapacity());
 	}
 
 	float max_load_factor() const
 	{
-		return m_max_load_factor;
+		return m_max_load_factor / 1000.0;
 	}
 
 	float load_factor() const
