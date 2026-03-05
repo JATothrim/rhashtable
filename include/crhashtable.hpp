@@ -92,6 +92,7 @@ protected:
 		const_cast<Key&>(dst.first) = std::move(const_cast<Key&>(src.first));
 		dst.second = std::move(src.second);
 	}
+
 public:
 	// Public API typedefs.
 	using key_type = const Key;
@@ -186,19 +187,27 @@ protected:
 		return size_t(1) << m_shift;
 	}
 
-	inline meta_t& at(slot_iterator i) noexcept
+	inline size_t modulus(size_t hash_value) const noexcept
 	{
-		return m_metatable[i];
+		// The low hash bits become part of the slot's probe hash.
+		// These bits shouldn't be part of the modulus, thus the modulus
+		// is computed via right-shifting the hash bits into the correct range.
+		return hash_value >> (sizeof(hash_value) * 8 - m_shift);
 	}
 
-	inline const meta_t& at(slot_iterator i) const noexcept
+	inline meta_t* at_modulus(size_t hash_value) noexcept
 	{
-		return m_metatable[i];
+		return m_metatable + modulus(hash_value);
 	}
 
-	inline const meta_t& const_at(slot_iterator i) const noexcept
+	inline const meta_t* at_modulus(size_t hash_value) const noexcept
 	{
-		return m_metatable[i];
+		return m_metatable + modulus(hash_value);
+	}
+
+	inline const meta_t* const_at_modulus(size_t hash_value) const noexcept
+	{
+		return m_metatable + modulus(hash_value);
 	}
 
 	// Distance-from-home
@@ -227,25 +236,7 @@ protected:
 		return hash_value & ((slot_type(1) << DFH_SHIFT) - 1);
 	}
 
-	inline size_t modulus(size_t hash_value) const noexcept
-	{
-		// The low hash bits become part of the slot's probe hash.
-		// These bits shouldn't be part of the modulus, thus the modulus
-		// is computed via right-shifting the hash bits into the correct range.
-		return hash_value >> (sizeof(hash_value) * 8 - m_shift);
-	}
-
 	// Advance to next bucket or wraparound.
-	template<typename Meta>
-	inline void next_bucket(slot_iterator& index, Meta*& ptr) const noexcept
-	{
-		++index;
-		if (index == mcapacity()) {
-			index = 0;
-		}
-		ptr = &m_metatable[index];
-	}
-
 	template<typename Meta>
 	inline void next_bucket(Meta*& ptr) const noexcept
 	{
@@ -274,6 +265,7 @@ protected:
 		}
 		return shift;
 	}
+
 
 	void grow_and_clear()
 	{
@@ -305,14 +297,14 @@ protected:
 		m_metatable_end = m_metatable + mcapacity();
 	}
 
-	inline slot_iterator insert_index(size_t hash, index_type elementIndex) noexcept
+	inline const meta_t* insert_index(size_t hash, index_type elementIndex) noexcept
 	{
 		// Metadata entry to be inserted:
 		// DFH == 1 => element is at it's home index
 		meta_t curr = {dfh_increment() + probe_hash(hash), elementIndex};
 
 		// Find insertion point, i.e. skip over too poor slots.
-		auto* bucket = &at(modulus(hash));
+		auto* bucket = at_modulus(hash);
 		while (curr.dfh_hash <= bucket->dfh_hash) {
 			assert(!dfh_overflow(curr.dfh_hash));
 			curr.dfh_hash += dfh_increment();
@@ -325,36 +317,34 @@ protected:
 		for(;;) {
 			std::swap(*bucket, curr);
 			if (!curr.dfh_hash) {
-				return std::distance(&at(0), element_bucket);
+				return element_bucket;
 			} else if (dfh_overflow(curr.dfh_hash)) [[unlikely]] {
 				// ran out of DFH bits, the metadata now trash.
-				return mcapacity();
+				return m_metatable_end;
 			}
 			curr.dfh_hash += dfh_increment();
 			this->next_bucket(bucket);
 		}
 	}
 
-	inline slot_iterator find_index(size_t hash, uint32_t elementIndex) const noexcept
+	inline meta_t* find_index(size_t hash, uint32_t elementIndex) const noexcept
 	{
-		slot_iterator pos = modulus(hash);
-		const auto* bucket = &const_at(pos);
+		const auto* bucket = const_at_modulus(hash);
 		// The element must be at bucket or some slot after this.
 		// A empty-slot cannot exist before the element's slot.
 		while (bucket->nth != elementIndex) {
 			assert(bucket->dfh_hash);
-			this->next_bucket(pos, bucket);
+			this->next_bucket(bucket);
 		}
 		assert(bucket->dfh_hash);
-		return pos;
+		return const_cast<meta_t*>(bucket);
 	}
 
-	inline void erase_index(slot_iterator itr) noexcept
+	inline void erase_bucket(meta_t* bucket) noexcept
 	{
 		// Maintain the robin-hood hashing invariant:
 		// Shift backwards from bucket+1 until empty slot or home index is found.
 		// The DFH is consequently decremented by one.
-		auto* bucket = &at(itr);
 		auto* prev = bucket;
 		this->next_bucket(bucket);
 
@@ -371,48 +361,48 @@ protected:
 	 * Element access.
 	 */
 
-	value_t* element(slot_iterator pos)
+	value_t* element(const meta_t* pos)
 	{
-		if (pos == mcapacity()) {
+		if (pos == m_metatable_end) {
 			return m_elements.data() + m_elements.size();
 		}
 		// For set like containers non-const return type is impossible.
-		return &m_elements[at(pos).nth];
+		return &m_elements[pos->nth];
 	}
 
-	const value_t* element(slot_iterator pos) const
+	const value_t* element(const meta_t* pos) const
 	{
-		if (pos == mcapacity()) {
+		if (pos == m_metatable_end) {
 			return m_elements.data() + m_elements.size();
 		}
-		return &m_elements[at(pos).nth];
+		return &m_elements[pos->nth];
 	}
 
-	slot_iterator convert_iterator(value_t* itr)
+	const meta_t* convert_iterator(value_t* itr)
 	{
 		if (itr == m_elements.data() + m_elements.size()) {
-			return mcapacity();
+			return m_metatable_end;
 		}
 		auto hash = m_hasher(this->to_key(*itr));
 		index_type pos = std::distance(m_elements.data(), itr);
 		return find_index(hash, pos);
 	}
 
-	slot_iterator convert_iterator(const value_t* itr) const
+	const meta_t* convert_iterator(const value_t* itr) const
 	{
 		if (itr == m_elements.data() + m_elements.size()) {
-			return mcapacity();
+			return m_metatable_end;
 		}
 		auto hash = m_hasher(this->to_key(*itr));
 		index_type pos = std::distance(m_elements.data(), itr);
 		return find_index(hash, pos);
 	}
 
-	slot_iterator advance(slot_iterator itr, ptrdiff_t n) const
+	const meta_t* advance(const meta_t* itr, ptrdiff_t n) const
 	{
 		// Advance up to end(), skipping empty buckets.
-		while (n && itr != mcapacity()) {
-			n -= at(itr).dfh_hash != slot_type(0);
+		while (n && itr != m_metatable_end) {
+			n -= itr->dfh_hash != slot_type(0);
 			++itr;
 		}
 		return itr;
@@ -423,14 +413,14 @@ protected:
 	 * @pre metadata table must have been cleared.
 	 * @return slot_iterator of the elements.back()
 	 */
-	slot_iterator do_rehash()
+	const meta_t* do_rehash()
 	{
-		auto last = mcapacity();
+		auto last = m_metatable_end;
 
 		// Re-build metadata.
 		for (size_t i = 0; i < m_elements.size(); ++i) {
 			last = insert_index(m_hasher(this->to_key(m_elements[i])), i);
-			if (last == mcapacity()) {
+			if (last == m_metatable_end) {
 				// Oops, too many collisions.
 				grow_and_clear();
 				i = 0;
@@ -444,7 +434,7 @@ protected:
 	 * @return slot_iterator of the inserted m_elements.back()
 	 */
 	template <typename Item, typename... Args>
-	slot_iterator do_emplace(const size_t hash, Item&& item, Args&&... args)
+	const meta_t* do_emplace(const size_t hash, Item&& item, Args&&... args)
 	{
 		m_elements.emplace_back(std::forward<Item>(item), std::forward<Args>(args)...);
 
@@ -455,7 +445,7 @@ protected:
 		}
 
 		auto itr = insert_index(hash, m_elements.size() - 1);
-		if (itr == mcapacity()) {
+		if (itr == m_metatable_end) {
 			grow_and_clear();
 			return do_rehash();
 		}
@@ -465,20 +455,20 @@ protected:
 	/**
 	 * FIND()
 	 */
-	slot_iterator do_find(const size_t hash, const Key& kval) const
+	const meta_t* do_find(const size_t hash, const Key& kval) const
 	{
 		slot_type dist = dfh_increment() + probe_hash(hash);
-		const auto* bucket = &const_at(modulus(hash));
+		const auto* bucket = const_at_modulus(hash);
 
 		for (;;) {
 			if (bucket->dfh_hash < dist) {
 				// DFH is greater than inserted key can have => key not found.
 				// This branch is before the below branch, to early return on empty home slots.
-				return mcapacity();
+				return m_metatable_end;
 			} else if (bucket->dfh_hash == dist) {
 				if (m_equal(kval, this->to_key(m_elements[bucket->nth]))) {
 					// Found!
-					return std::distance(&const_at(0), bucket);
+					return bucket;
 				}
 			}
 			this->next_bucket(bucket);
@@ -489,24 +479,23 @@ protected:
 	/**
 	 * ERASE()
 	 */
-	void do_erase(slot_iterator itr)
+	void do_erase(meta_t* itr)
 	{
-		const auto index = at(itr).nth;
+		const auto index = itr->nth;
 		const slot_iterator at_end = m_elements.size() - 1;
 
 		if (index != at_end) [[likely]] {
 			// Erase the element: find where the m_elements.back() is in the metadata table,
 			// and redirect it to itr's slot.
 			const auto end_hash = m_hasher(this->to_key(m_elements.back()));
-			const auto rm = find_index(end_hash, at_end);
-			at(rm).nth = index;
+			find_index(end_hash, at_end)->nth = index;
 			// Move the element.
 			this->move_assign(m_elements[index], m_elements.back());
 		}
 
 		// Pop-back.
 		m_elements.pop_back();
-		erase_index(itr);
+		erase_bucket(itr);
 	}
 
 	void swap(HashtableAlgorithms & cont) noexcept
@@ -545,7 +534,6 @@ public:
 
 	HashtableAlgorithms(const HashtableAlgorithms & cont)
 		: m_elements(cont.m_elements)
-		, m_metatable_end(m_metatable + cont.mcapacity())
 		, m_shift(cont.m_shift)
 		, m_max_fill(cont.m_max_fill)
 		, m_max_load_factor(cont.m_max_load_factor)
@@ -554,6 +542,7 @@ public:
 	{
 		if (cont.m_metatable) {
 			m_metatable = new meta_t[cont.mcapacity()];
+			m_metatable_end = m_metatable + cont.mcapacity();
 			std::copy_n(cont.m_metatable, cont.mcapacity(), m_metatable);
 		}
 	}
@@ -590,8 +579,8 @@ public:
 	std::pair<local_iterator, bool> emplace(F&& key, Args&&... args)
 	{
 		const auto hash = m_hasher(this->to_key(key));
-		const auto pos = this->empty() ? mcapacity() : this->do_find(hash, this->to_key(key));
-		if (pos != mcapacity()) {
+		const auto pos = this->empty() ? m_metatable_end : this->do_find(hash, this->to_key(key));
+		if (pos != m_metatable_end) {
 			return {local_iterator(this, pos), false};
 		}
 		return {local_iterator(this, this->do_emplace(hash, std::forward<F>(key), std::forward<Args>(args)...)), true};
@@ -606,8 +595,8 @@ public:
 	 */
 	local_iterator erase(local_iterator rm)
 	{
-		this->do_erase(rm.slot());
-		return const_at(rm.slot()).dfh_hash ? rm : local_iterator(this, mcapacity());
+		this->do_erase(const_cast<meta_t*>(rm.slot()));
+		return rm.slot()->dfh_hash ? rm : local_iterator(this, m_metatable_end);
 	}
 
 	/**
@@ -617,7 +606,7 @@ public:
 	size_type erase(const Key& kval)
 	{
 		const auto pos = this->do_find(m_hasher(kval), kval);
-		if (pos == mcapacity()) {
+		if (pos == m_metatable_end) {
 			return 0;
 		}
 		this->do_erase(pos);
@@ -634,7 +623,7 @@ public:
 	value_iterator erase(value_iterator rm)
 	{
 		size_t dist = std::distance(m_elements.data(), rm.value());
-		do_erase(rm.slot());
+		do_erase(const_cast<meta_t*>(rm.slot()));
 
 		if (dist > m_elements.size())
 			--dist;
@@ -647,17 +636,16 @@ public:
 	template <typename F>
 	local_iterator find(F&& kval)
 	{
-		auto pos = empty() ? mcapacity() : this->do_find(m_hasher(this->to_key(kval)), std::forward<F>(kval));
+		auto pos = empty() ? m_metatable_end : this->do_find(m_hasher(this->to_key(kval)), std::forward<F>(kval));
 		return local_iterator(this, pos);
 	}
 
 	template <typename F>
 	const_local_iterator find(F&& kval) const
 	{
-		auto pos = empty() ? mcapacity() : this->do_find(m_hasher(this->to_key(kval)), std::forward<F>(kval));
+		auto pos = empty() ? m_metatable_end : this->do_find(m_hasher(this->to_key(kval)), std::forward<F>(kval));
 		return local_iterator(this, pos);
 	}
-
 
 	bool contains(const Key& kval) const
 	{
@@ -701,17 +689,17 @@ public:
 
 	local_iterator end()
 	{
-		return local_iterator(this, mcapacity());
+		return local_iterator(this, m_metatable_end);
 	}
 
 	const_local_iterator end() const
 	{
-		return const_local_iterator(this, mcapacity());
+		return const_local_iterator(this, m_metatable_end);
 	}
 
 	const_local_iterator cend() const
 	{
-		return const_local_iterator(this, mcapacity());
+		return const_local_iterator(this, m_metatable_end);
 	}
 
 	value_iterator vend()
@@ -732,7 +720,7 @@ public:
 	void clear()
 	{
 		m_elements.clear();
-		std::fill_n(&m_metatable[0], mcapacity(), meta_t{0,0});
+		std::fill(m_metatable, const_cast<meta_t*>(m_metatable_end), meta_t{0,0});
 	}
 
 	/**
@@ -795,7 +783,6 @@ public:
 	}
 
 	// TODO: implement more of STL unordered_map API.
-
 
 	// TODO: sort(): sort the elements in a value iterated range.
 	//       This is technically possible thanks the element indexes.
@@ -864,7 +851,7 @@ private:
 
 protected:
 	friend derived;
-	using slot_iterator = typename derived::slot_iterator;
+	using meta_t = typename derived::meta_t;
 	using value_t = std::conditional_t<IsConst
 									  , typename derived::value_t const
 									  , typename derived::value_t>;
@@ -874,12 +861,12 @@ protected:
 	friend value_iterator;
 
 private:
-	slot_iterator m_itr = -1;
+	const meta_t* m_itr = nullptr;
 
 protected:
 
-	slot_iterator slot() const {
-		return m_itr;
+	const meta_t* slot() const {
+		return  m_itr;
 	}
 
 	value_t* value() const
@@ -888,8 +875,8 @@ protected:
 	}
 
 	// Only container_type is allowed to construct us from a slot_iterator.
-	explicit BucketIterator(container_type * c, size_t index)
-		:  m_container(c), m_itr(index)
+	explicit BucketIterator(container_type * c, const meta_t* slotptr)
+		:  m_container(c), m_itr(slotptr)
 	{}
 
 public:
@@ -971,7 +958,7 @@ private:
 
 protected:
 	friend derived;
-	using slot_iterator = typename derived::slot_iterator;
+	using meta_t = typename derived::meta_t;
 	using value_t = std::conditional_t<IsConst
 									  , typename derived::value_t const
 									  , typename derived::value_t>;
@@ -985,7 +972,7 @@ private:
 
 protected:
 
-	slot_iterator slot() const {
+	const meta_t* slot() const {
 		return m_container->convert_iterator(m_itr);
 	}
 
