@@ -78,12 +78,12 @@ protected:
 	using element_type = std::pair<const Key, Mapped>;
 	using store_type = element_type;
 
-	static constexpr const Key& to_key(const element_type& value)
+	static constexpr auto to_key(const element_type& value) -> auto
 	{
 		return const_cast<const Key&>(value.first);
 	}
 
-	static constexpr const Key& to_key(const Key& value)
+	static constexpr auto to_key(const Key& value) -> auto
 	{
 		return value;
 	}
@@ -107,7 +107,7 @@ protected:
 	using element_type = const Key;
 	using store_type = Key;
 
-	static constexpr const Key& to_key(const Key& value)
+	static constexpr auto to_key(const Key& value) -> auto
 	{
 		return value;
 	}
@@ -183,12 +183,12 @@ protected:
 	 * Metadata access.
 	 */
 
-	inline size_t mcapacity() const noexcept
+	[[nodiscard]] inline auto mcapacity() const noexcept -> auto
 	{
 		return size_t(1) << m_shift;
 	}
 
-	inline size_t modulus(size_t hash_value) const noexcept
+	[[nodiscard]] inline auto modulus(size_t hash_value) const noexcept -> auto
 	{
 		// The low hash bits become part of the slot's probe hash.
 		// These bits shouldn't be part of the modulus, thus the modulus
@@ -196,45 +196,45 @@ protected:
 		return hash_value >> (sizeof(hash_value) * 8 - m_shift);
 	}
 
-	inline meta_t* at_modulus(size_t hash_value) noexcept
+	[[nodiscard]] inline auto at_modulus(size_t hash_value) noexcept -> auto
 	{
 		return m_metatable + modulus(hash_value);
 	}
 
-	inline const meta_t* at_modulus(size_t hash_value) const noexcept
+	[[nodiscard]] inline auto at_modulus(size_t hash_value) const noexcept -> const auto*
 	{
 		return m_metatable + modulus(hash_value);
 	}
 
-	inline const meta_t* const_at_modulus(size_t hash_value) const noexcept
+	[[nodiscard]] inline auto const_at_modulus(size_t hash_value) const noexcept -> const auto*
 	{
 		return m_metatable + modulus(hash_value);
 	}
 
 	// Distance-from-home
 	// Zero is reserved for empty slot so 1 is at home slot.
-	static constexpr slot_type dfh(slot_type x) noexcept
+	static constexpr auto dfh(slot_type x) noexcept
 	{
 		return x >> (SLOT_BITS - DFH_SHIFT);
 	}
 
 	// The DFH bits are arranged such that less-than comparison of the whole slot_type
 	// value works regardless of what the probe hash bits are.
-	static constexpr slot_type dfh_increment() noexcept
+	static constexpr auto dfh_increment() noexcept
 	{
 		return slot_type(1) << (SLOT_BITS - DFH_SHIFT);
 	}
 
 	// Can dfh_hash be incremented by dfh_increment()?
-	static constexpr bool dfh_overflow(slot_type dfh_hash) noexcept
+	static constexpr auto dfh_overflow(slot_type dfh_hash) noexcept
 	{
 		return dfh_hash >= ((~slot_type(0)) << (SLOT_BITS - DFH_SHIFT));
 	}
 
-	static constexpr slot_type probe_hash(size_t hash_value) noexcept
+	static constexpr auto probe_hash(size_t hash_value) noexcept
 	{
 		// Grab the low DFH_SHIFT bits.
-		return hash_value & ((slot_type(1) << DFH_SHIFT) - 1);
+		return slot_type(hash_value & ((slot_type(1) << DFH_SHIFT) - 1));
 	}
 
 	// Advance to next bucket or wraparound.
@@ -247,24 +247,24 @@ protected:
 		}
 	}
 
-	inline size_t size_limit() const noexcept
+	[[nodiscard]] inline auto size_limit() const noexcept
 	{
 		return m_max_fill;
 	}
 
-	inline size_t size_limit_low() const noexcept
+	[[nodiscard]] inline auto size_limit_low() const noexcept
 	{
 		return m_max_fill / 2;
 	}
 
-	inline size_t max_fill_from_pow2(size_t pow2) const noexcept
+	[[nodiscard]] inline auto max_fill_from_pow2(size_t pow2) const noexcept
 	{
 		// Floating point would be easier, but this would sprinkle the already bulky emplace()
 		// with FPU instructions. Thus, do fixed-point computation here.
 		return ((pow2 * m_max_load_factor) % (pow2 * 1000)) / 1000;
 	}
 
-	size_t calculate_shift_for(size_t max_elements) const noexcept
+	[[nodiscard]] auto calculate_shift_for(size_t max_elements) const noexcept
 	{
 		int shift = 1;
 		size_t pow2 = 2;
@@ -305,7 +305,7 @@ protected:
 		m_metatable_end = m_metatable + mcapacity();
 	}
 
-	inline const meta_t* insert_index(size_t hash, index_type elementIndex) noexcept
+	inline auto insert_index(size_t hash, index_type elementIndex) noexcept -> const auto*
 	{
 		// Metadata entry to be inserted:
 		// DFH == 1 => element is at it's home index
@@ -335,7 +335,7 @@ protected:
 		}
 	}
 
-	inline meta_t* find_index(size_t hash, uint32_t elementIndex) const noexcept
+	[[nodiscard]] inline auto find_index(size_t hash, uint32_t elementIndex) const noexcept -> auto*
 	{
 		const auto* bucket = const_at_modulus(hash);
 		// The element must be at bucket or some slot after this.
@@ -369,7 +369,7 @@ protected:
 	 * Element access.
 	 */
 
-	value_t* element(const meta_t* pos)
+	auto element(const meta_t* pos) -> auto*
 	{
 		if (pos == m_metatable_end) {
 			return m_elements.data() + m_elements.size();
@@ -377,7 +377,7 @@ protected:
 		return &m_elements[pos->nth];
 	}
 
-	const value_t* element(const meta_t* pos) const
+	auto element(const meta_t* pos) const -> const auto*
 	{
 		if (pos == m_metatable_end) {
 			return m_elements.data() + m_elements.size();
@@ -385,7 +385,7 @@ protected:
 		return &m_elements[pos->nth];
 	}
 
-	const meta_t* convert_iterator(value_t* itr)
+	auto convert_iterator(value_t* itr) -> const auto*
 	{
 		if (itr == m_elements.data() + m_elements.size()) {
 			return m_metatable_end;
@@ -395,7 +395,7 @@ protected:
 		return find_index(hash, pos);
 	}
 
-	const meta_t* convert_iterator(const value_t* itr) const
+	auto convert_iterator(const value_t* itr) const -> const auto*
 	{
 		if (itr == m_elements.data() + m_elements.size()) {
 			return m_metatable_end;
@@ -405,7 +405,7 @@ protected:
 		return find_index(hash, pos);
 	}
 
-	const meta_t* advance(const meta_t* itr, ptrdiff_t n) const
+	auto advance(const meta_t* itr, ptrdiff_t n) const -> const auto*
 	{
 		// Advance up to end(), skipping empty buckets.
 		while (n && itr != m_metatable_end) {
@@ -419,7 +419,7 @@ protected:
 	 * Rehash and re-insert all elements into the Metatable.
 	 * @pre metadata table must have been cleared.
 	 */
-	const meta_t* do_rehash()
+	auto do_rehash() -> const auto*
 	{
 		auto last = m_metatable_end;
 
@@ -439,7 +439,7 @@ protected:
 	 * INSERT() a value, rehash if necessary.
 	 */
 	template <typename Item, typename... Args>
-	const meta_t* do_emplace(const size_t hash, Item&& item, Args&&... args)
+	auto do_emplace(const size_t hash, Item&& item, Args&&... args) -> const auto*
 	{
 		m_elements.emplace_back(std::forward<Item>(item), std::forward<Args>(args)...);
 
@@ -460,7 +460,7 @@ protected:
 	/**
 	 * FIND()
 	 */
-	const meta_t* do_find(const size_t hash, const Key& kval) const
+	[[nodiscard]] auto do_find(const size_t hash, const Key& kval) const -> const auto*
 	{
 		slot_type dist = dfh_increment() + probe_hash(hash);
 		const auto* bucket = const_at_modulus(hash);
@@ -550,13 +550,13 @@ public:
 		}
 	}
 
-	HashtableAlgorithms& operator= (const HashtableAlgorithms& cont)
+	auto operator= (const HashtableAlgorithms& cont) -> auto&
 	{
 		HashtableAlgorithms(cont).swap(*this);
 		return *this;
 	}
 
-	HashtableAlgorithms& operator= (HashtableAlgorithms&& cont) noexcept
+	auto operator= (HashtableAlgorithms&& cont) noexcept -> auto&
 	{
 		HashtableAlgorithms(std::move(cont)).swap(*this);
 		return *this;
@@ -579,7 +579,7 @@ public:
 	 * @return local_iterator to the inserted element or to a existing element if the key already exists.
 	 */
 	template <typename F, typename... Args>
-	std::pair<local_iterator, bool> emplace(F&& key, Args&&... args)
+	auto emplace(F&& key, Args&&... args) -> std::pair<local_iterator, bool>
 	{
 		const auto hash = m_hasher(this->to_key(key));
 		const auto pos = this->empty() ? m_metatable_end : this->do_find(hash, this->to_key(key));
@@ -596,7 +596,7 @@ public:
 	 *         end() can be returned before the container is empty.
 	 * @pre @p rm must be a dereferenceable.
 	 */
-	local_iterator erase(local_iterator rm)
+	auto erase(local_iterator rm) -> local_iterator
 	{
 		this->do_erase(const_cast<meta_t*>(rm.slot()));
 		return rm.slot()->dfh_hash ? rm : local_iterator(this, m_metatable_end);
@@ -606,7 +606,7 @@ public:
 	 * Erase a element equivalent to @p kval
 	 * @post All references and iterators are invalidated if non-zero value is returned.
 	 */
-	size_type erase(const Key& kval)
+	auto erase(const Key& kval) -> size_type
 	{
 		const auto pos = this->do_find(m_hasher(kval), kval);
 		if (pos == m_metatable_end) {
@@ -623,7 +623,7 @@ public:
 	 *         end() is returned if container was emptied.
 	 * @pre @p rm must be a dereferenceable.
 	 */
-	value_iterator erase(value_iterator rm)
+	auto erase(value_iterator rm) -> value_iterator
 	{
 		size_t dist = std::distance(m_elements.data(), rm.value());
 		do_erase(const_cast<meta_t*>(rm.slot()));
@@ -637,30 +637,30 @@ public:
 	 * Find @kval in the container.
 	 */
 	template <typename F>
-	local_iterator find(F&& kval)
+	[[nodiscard]] auto find(F&& kval) -> local_iterator
 	{
 		auto pos = empty() ? m_metatable_end : this->do_find(m_hasher(this->to_key(kval)), std::forward<F>(kval));
 		return local_iterator(this, pos);
 	}
 
 	template <typename F>
-	const_local_iterator find(F&& kval) const
+	[[nodiscard]] auto find(F&& kval) const -> const_local_iterator
 	{
 		auto pos = empty() ? m_metatable_end : this->do_find(m_hasher(this->to_key(kval)), std::forward<F>(kval));
-		return local_iterator(this, pos);
+		return const_local_iterator(this, pos);
 	}
 
-	bool contains(const Key& kval) const
+	[[nodiscard]] auto contains(const Key& kval) const
 	{
 		return find(kval) != end();
 	}
 
-	size_t count(const Key& kval) const
+	[[nodiscard]] size_type count(const Key& kval) const
 	{
 		return find(kval) == end() ? 0 : 1;
 	}
 
-	bool empty() const
+	[[nodiscard]] auto empty() const
 	{
 		return m_elements.empty();
 	}
@@ -669,17 +669,17 @@ public:
 	 * Iterator to elements.
 	 */
 
-	value_iterator begin()
+	[[nodiscard]] auto begin()
 	{
 		return value_iterator(this, m_elements.data());
 	}
 
-	const_value_iterator begin() const
+	[[nodiscard]] auto begin() const
 	{
 		return const_value_iterator(this, m_elements.data());
 	}
 
-	const_value_iterator cbegin() const
+	[[nodiscard]] auto cbegin() const
 	{
 		return const_value_iterator(this, m_elements.data());
 	}
@@ -690,32 +690,32 @@ public:
 	 *       A local_iterator can implicitly converted into a value_iterator.
 	 */
 
-	local_iterator end()
+	[[nodiscard]] auto end()
 	{
 		return local_iterator(this, m_metatable_end);
 	}
 
-	const_local_iterator end() const
+	[[nodiscard]] auto end() const
 	{
 		return const_local_iterator(this, m_metatable_end);
 	}
 
-	const_local_iterator cend() const
+	[[nodiscard]] auto cend() const
 	{
 		return const_local_iterator(this, m_metatable_end);
 	}
 
-	value_iterator vend()
+	[[nodiscard]] auto vend()
 	{
 		return value_iterator(this, m_elements.data() + m_elements.size());
 	}
 
-	const_value_iterator vend() const
+	[[nodiscard]] auto vend() const
 	{
 		return const_value_iterator(this, m_elements.data() + m_elements.size());
 	}
 
-	const_value_iterator vcend() const
+	[[nodiscard]] auto vcend() const
 	{
 		return const_value_iterator(this, m_elements.data() + m_elements.size());
 	}
@@ -742,18 +742,18 @@ public:
 
 	void max_load_factor(float lf)
 	{
-		m_max_load_factor = lf * 1000;
+		m_max_load_factor = size_type(lf * 1000);
 		m_max_fill = max_fill_from_pow2(mcapacity());
 	}
 
-	float max_load_factor() const
+	[[nodiscard]] float max_load_factor() const
 	{
 		return m_max_load_factor / 1000.0;
 	}
 
-	float load_factor() const
+	[[nodiscard]] float load_factor() const
 	{
-		return size() / bucket_count();
+		return float(size()) / bucket_count();
 	}
 
 	void rehash(size_t new_size)
@@ -765,22 +765,22 @@ public:
 		}
 	}
 
-	size_t bucket_count() const noexcept
+	[[nodiscard]] size_type bucket_count() const noexcept
 	{
 		return mcapacity();
 	}
 
-	size_t size() const noexcept
+	[[nodiscard]] size_type size() const noexcept
 	{
 		return m_elements.size();
 	}
 
-	Hasher hash_function() const
+	[[nodiscard]] auto hash_function() const
 	{
 		return m_hasher;
 	}
 
-	Equal key_eq() const
+	[[nodiscard]] auto key_eq() const
 	{
 		return m_equal;
 	}
@@ -868,11 +868,11 @@ private:
 
 protected:
 
-	const meta_t* slot() const {
-		return  m_itr;
+	[[nodiscard]] auto slot() const {
+		return m_itr;
 	}
 
-	value_t* value() const
+	[[nodiscard]] auto value() const
 	{
 		return m_container->element(m_itr);
 	}
@@ -904,12 +904,12 @@ public:
 		return value();
 	}
 
-	BucketIterator& operator++() {
+	auto operator++() -> auto& {
 		m_itr = m_container->advance(m_itr, 1);
 		return *this;
 	}
 
-	BucketIterator operator++(int) {
+	auto operator++(int) -> auto {
 		auto tmp = *this;
 		m_itr = m_container->advance(m_itr, 1);
 		return tmp;
@@ -941,7 +941,7 @@ public:
 		return value_iterator(m_container, m_container->element(m_itr));
 	}
 
-	value_iterator as_value_iterator() const
+	[[nodiscard]] value_iterator as_value_iterator() const
 	{
 		return *this;
 	}
@@ -973,11 +973,11 @@ private:
 
 protected:
 
-	const meta_t* slot() const {
+	[[nodiscard]] auto slot() const {
 		return m_container->convert_iterator(m_itr);
 	}
 
-	value_t* value() const
+	[[nodiscard]] auto value() const
 	{
 		return m_itr;
 	}
@@ -1011,12 +1011,12 @@ public:
 		return value();
 	}
 
-	ValueIterator& operator++() {
+	auto operator++() -> auto& {
 		++m_itr;
 		return *this;
 	}
 
-	ValueIterator operator++(int) {
+	auto operator++(int) -> auto {
 		return ValueIterator(m_container, m_itr++);
 	}
 
@@ -1031,12 +1031,12 @@ public:
 
 	// Bidirectional
 
-	ValueIterator& operator--() {
+	auto operator--() -> auto& {
 		--m_itr;
 		return *this;
 	}
 
-	ValueIterator operator--(int) {
+	auto operator--(int) -> auto {
 		return ValueIterator(m_container, m_itr--);
 	}
 
@@ -1046,21 +1046,21 @@ public:
 		return value()[n];
 	}
 
-	ValueIterator& operator+= (difference_type n) {
+	auto operator+= (difference_type n) -> auto& {
 		m_itr += n;
 		return *this;
 	}
 
-	ValueIterator operator+ (difference_type n) const {
+	auto operator+ (difference_type n) const -> auto {
 		return ValueIterator(*this) += n;
 	}
 
-	ValueIterator& operator-= (difference_type n) {
+	auto operator-= (difference_type n) -> auto& {
 		m_itr -= n;
 		return *this;
 	}
 
-	ValueIterator operator- (difference_type n) const {
+	auto operator- (difference_type n) const -> auto {
 		return ValueIterator(*this) -= n;
 	}
 
