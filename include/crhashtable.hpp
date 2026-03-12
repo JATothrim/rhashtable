@@ -71,6 +71,7 @@ class ValueIterator;
 /**
  * Map vs. set container API
  */
+
 template<typename Key, typename Mapped>
 class Config {
 protected:
@@ -115,6 +116,7 @@ protected:
 	{
 		dst = std::move(src);
 	}
+
 public:
 	// Public API typedefs.
 	using key_type = element_type;
@@ -155,7 +157,6 @@ public:
 private:
 	static constexpr slot_type SLOT_BITS = 8 * sizeof(slot_type);
 	// Count of DFH bits.
-	// In this version jh::HashtableAlgorithms<> m_dfh_shift is a constant.
 	static constexpr uint32_t DFH_SHIFT = SLOT_BITS / 2;
 
 	// Note: the members are ordered to minimize table size.
@@ -232,7 +233,7 @@ protected:
 
 	static constexpr slot_type probe_hash(size_t hash_value) noexcept
 	{
-		// Grab the low m_dfh_shift bits.
+		// Grab the low DFH_SHIFT bits.
 		return hash_value & ((slot_type(1) << DFH_SHIFT) - 1);
 	}
 
@@ -240,7 +241,6 @@ protected:
 	template<typename Meta>
 	inline void next_bucket(Meta*& ptr) const noexcept
 	{
-		// Index-less.
 		++ptr;
 		if (ptr == m_metatable_end) {
 			ptr = m_metatable;
@@ -259,14 +259,13 @@ protected:
 
 	inline size_t max_fill_from_pow2(size_t pow2) const noexcept
 	{
-		// Floating point would be *easier*, but this would sprinkle the already slow emplace()
+		// Floating point would be easier, but this would sprinkle the already bulky emplace()
 		// with FPU instructions. Thus, do fixed-point computation here.
 		return ((pow2 * m_max_load_factor) % (pow2 * 1000)) / 1000;
 	}
 
 	size_t calculate_shift_for(size_t max_elements) const noexcept
 	{
-
 		int shift = 1;
 		size_t pow2 = 2;
 		while (max_fill_from_pow2(pow2) < max_elements) {
@@ -294,7 +293,6 @@ protected:
 		m_metatable_end = m_metatable + mcapacity();
 	}
 
-	/// Resize for at least @p capacity keys.
 	void resize_and_clear(size_t max_elements)
 	{
 		// Set capacity and throw away the metadata.
@@ -353,8 +351,8 @@ protected:
 	inline void erase_bucket(meta_t* bucket) noexcept
 	{
 		// Maintain the robin-hood hashing invariant:
-		// Shift backwards from bucket+1 until empty slot or home index is found.
-		// The DFH is consequently decremented by one.
+		// Shift backwards from bucket+1 until empty slot or home slot is found.
+		// The DFH of each moved slot consequently decremented by one.
 		auto* prev = bucket;
 		this->next_bucket(bucket);
 
@@ -376,7 +374,6 @@ protected:
 		if (pos == m_metatable_end) {
 			return m_elements.data() + m_elements.size();
 		}
-		// For set like containers non-const return type is impossible.
 		return &m_elements[pos->nth];
 	}
 
@@ -421,7 +418,6 @@ protected:
 	/**
 	 * Rehash and re-insert all elements into the Metatable.
 	 * @pre metadata table must have been cleared.
-	 * @return slot_iterator of the elements.back()
 	 */
 	const meta_t* do_rehash()
 	{
@@ -441,7 +437,6 @@ protected:
 
 	/**
 	 * INSERT() a value, rehash if necessary.
-	 * @return slot_iterator of the inserted m_elements.back()
 	 */
 	template <typename Item, typename... Args>
 	const meta_t* do_emplace(const size_t hash, Item&& item, Args&&... args)
@@ -499,7 +494,6 @@ protected:
 			// and redirect it to itr's slot.
 			const auto end_hash = m_hasher(this->to_key(m_elements.back()));
 			find_index(end_hash, at_end)->nth = index;
-			// Move the element.
 			this->move_assign(m_elements[index], m_elements.back());
 		}
 
@@ -511,7 +505,6 @@ protected:
 	void swap(HashtableAlgorithms & cont) noexcept
 	{
 		using std::swap;
-
 		std::swap(m_elements, cont.m_elements);
 		std::swap(m_metatable, cont.m_metatable);
 		std::swap(m_metatable_end, cont.m_metatable_end);
@@ -583,7 +576,7 @@ public:
 
 	/**
 	 * Construct value_type from @p key and pass additional arguments to the value_type constructor.
-	 * @return local_iterator to the inserted element or to a existing element if the key already exist.
+	 * @return local_iterator to the inserted element or to a existing element if the key already exists.
 	 */
 	template <typename F, typename... Args>
 	std::pair<local_iterator, bool> emplace(F&& key, Args&&... args)
@@ -884,7 +877,7 @@ protected:
 		return m_container->element(m_itr);
 	}
 
-	// Only container_type is allowed to construct us from a slot_iterator.
+	// Only container_type is allowed to construct us.
 	explicit BucketIterator(container_type * c, const meta_t* slotptr)
 		:  m_container(c), m_itr(slotptr)
 	{}
@@ -952,8 +945,6 @@ public:
 	{
 		return *this;
 	}
-
-	// TODO: index() to return the pointed-to element's index in the element array.
 };
 
 /**
@@ -991,13 +982,12 @@ protected:
 		return m_itr;
 	}
 
-	// container_type and bucket_iterator is allowed to construct us.
+	// container_type and bucket_iterator are allowed to construct us.
 	explicit ValueIterator(container_type * c, value_t* itr)
 		:  m_container(c), m_itr(itr)
 	{}
 
 public:
-	// TODO: implement actual random access
 	using iterator_category = std::random_access_iterator_tag;
 	using difference_type = std::ptrdiff_t;
 	using value_type = std::conditional_t<IsConst, const value_t, value_t>;
@@ -1076,7 +1066,7 @@ public:
 
 	bool operator==(const local_iterator& other) const
 	{
-		// It is cheaper to compare the element's address of other.
+		// It is cheaper to compare the element's address.
 		// m_container->element() has a special case for m_itr == end()
 		return value() == other.value();
 	}
@@ -1091,6 +1081,7 @@ public:
 		return local_iterator(m_container, slot());
 	}
 };
+
 /**
  * unordered_set<> like container
  */
@@ -1109,6 +1100,6 @@ template <typename Key
 		 , typename Equal = std::equal_to<Key>>
 using RHashMap = HashtableAlgorithms<Key, T, Hasher, Equal>;
 
-} // namespace jh
+} // <namespace jh>
 
 #endif // CRHASHTABLE_43FF74E8499_H_INCLUDED
