@@ -125,6 +125,9 @@ void test_iterators()
     for (auto& k : std::as_const(map)) { (volatile void)k; }
     for (auto& k : vrange(map)) { (volatile void)k; }
     for (auto& k : vrange(std::as_const(map))) { (volatile void)k; }
+    for (auto slot = map.local_begin(); slot != map.end(); ++slot) {
+        (volatile void)slot;
+    }
 
     MapType::value_iterator def;
     auto pm = map.begin();

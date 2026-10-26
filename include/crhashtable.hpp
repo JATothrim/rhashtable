@@ -415,6 +415,19 @@ protected:
 		return itr;
 	}
 
+	auto find_first() const -> const auto*
+	{
+		if (!m_metatable) {
+			return m_metatable_end;
+		} else {
+			const meta_t* pos = m_metatable;
+			while (pos != m_metatable_end && pos->dfh_hash == slot_type(0)) {
+				++pos;
+			}
+			return pos;
+		}
+	}
+
 	/**
 	 * Rehash and re-insert all elements into the Metatable.
 	 * @pre metadata table must have been cleared.
@@ -691,6 +704,19 @@ public:
 	[[nodiscard]] auto cbegin() const
 	{
 		return const_value_iterator(this, m_elements.data());
+	}
+
+	/**
+	 * Get local_iterator to first non-empty slot or end()
+	 */
+	[[nodiscard]] auto local_begin()
+	{
+		return local_iterator(this, this->find_first());
+	}
+
+	[[nodiscard]] auto local_begin() const
+	{
+		return const_local_iterator(this, this->find_first());
 	}
 
 	/**
