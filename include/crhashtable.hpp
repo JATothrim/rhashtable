@@ -530,7 +530,7 @@ public:
 		, m_metatable_end(std::exchange(cont.m_metatable_end, nullptr))
 		, m_shift(std::exchange(cont.m_shift, 0))
 		, m_max_fill(std::exchange(cont.m_max_fill, 0))
-		, m_max_load_factor(std::exchange(cont.m_m_max_load_factor, 0))
+		, m_max_load_factor(std::exchange(cont.m_max_load_factor, 0))
 		, m_hasher(std::move(cont.m_hasher))
 		, m_equal(std::move(cont.m_equal))
 	{}
@@ -608,11 +608,14 @@ public:
 	 */
 	auto erase(const Key& kval) -> size_type
 	{
+		if (this->empty()) {
+			return 0;
+		}
 		const auto pos = this->do_find(m_hasher(kval), kval);
 		if (pos == m_metatable_end) {
 			return 0;
 		}
-		this->do_erase(pos);
+		this->do_erase(const_cast<meta_t*>(pos));
 		return 1;
 	}
 
@@ -626,7 +629,7 @@ public:
 	auto erase(value_iterator rm) -> value_iterator
 	{
 		size_t dist = std::distance(m_elements.data(), rm.value());
-		do_erase(const_cast<meta_t*>(rm.slot()));
+		this->do_erase(const_cast<meta_t*>(rm.slot()));
 
 		if (dist > m_elements.size())
 			--dist;
@@ -652,12 +655,18 @@ public:
 
 	[[nodiscard]] auto contains(const Key& kval) const
 	{
-		return find(kval) != end();
+		if (this->empty()) {
+			return false;
+		}
+		return this->do_find(m_hasher(this->to_key(kval)), std::forward<const Key>(kval)) != m_metatable_end;
 	}
 
 	[[nodiscard]] size_type count(const Key& kval) const
 	{
-		return find(kval) == end() ? 0 : 1;
+		if (this->empty()) {
+			return 0;
+		}
+		return this->do_find(m_hasher(this->to_key(kval)), std::forward<const Key>(kval)) != m_metatable_end;
 	}
 
 	[[nodiscard]] auto empty() const
@@ -733,7 +742,13 @@ public:
 	void shrink_to_fit()
 	{
 		m_elements.shrink_to_fit();
-		if (m_elements.size() < size_limit_low()) {
+		if (m_elements.empty()) {
+			// Reset.
+			delete[] m_metatable;
+			m_metatable_end = m_metatable = nullptr;
+			m_shift = 0;
+			m_max_fill = 0;
+		} else if (m_elements.size() < size_limit_low()) {
 			// Too sparse/wasting memory.
 			resize_and_clear(m_elements.size());
 			do_rehash();
@@ -839,7 +854,7 @@ public:
 template<typename X>
 auto vrange(X & x) -> value_range<X>
 {
-	return value_range_t(x);
+	return value_range(x);
 }
 
 /**
@@ -1062,6 +1077,11 @@ public:
 
 	auto operator- (difference_type n) const -> auto {
 		return ValueIterator(*this) -= n;
+	}
+
+	friend difference_type operator- (const ValueIterator& lhs, const ValueIterator& rhs)
+	{
+		return std::distance(rhs.value(), lhs.value());
 	}
 
 	bool operator==(const local_iterator& other) const
